@@ -6,7 +6,10 @@ from pathlib import Path
 from unittest import mock
 from subprocess import CalledProcessError
 
-from charms.layer import openstack
+import charms.layer.openstack
+
+
+openstack = charms.layer.openstack
 
 
 def patch_fixture(patch_target):
@@ -17,6 +20,8 @@ def patch_fixture(patch_target):
     return _fixture
 
 
+subprocess = patch_fixture('charms.layer.openstack.subprocess')
+status = patch_fixture('charms.layer.openstack.status')
 urlopen = patch_fixture('charms.layer.openstack.urlopen')
 log_err = patch_fixture('charms.layer.openstack.log_err')
 _load_creds = patch_fixture('charms.layer.openstack._load_creds')
@@ -30,6 +35,9 @@ OctaviaLBClient = patch_fixture('charms.layer.openstack.OctaviaLBClient')
 NeutronLBClient = patch_fixture('charms.layer.openstack.NeutronLBClient')
 _default_subnet = patch_fixture('charms.layer.openstack._default_subnet')
 sleep = patch_fixture('time.sleep')
+_normalize_creds = patch_fixture('charms.layer.openstack._normalize_creds')
+_save_creds = patch_fixture('charms.layer.openstack._save_creds')
+_determine_version = patch_fixture('charms.layer.openstack._determine_version')
 
 
 @pytest.fixture
@@ -79,6 +87,12 @@ def test_determine_version(urlopen, log_err):
         b'"type": "application/vnd.openstack.identity-v3+json"}]}}')
     assert openstack._determine_version({}, 'https://endpoint/') == '3'
     assert not log_err.called
+
+    urlopen.side_effect = ValueError('foo')
+    assert openstack._determine_version({}, 'https://endpoint/') is None
+
+    urlopen.side_effect = None
+    assert openstack._determine_version({}, 'https://endpoint/') == '3'
 
     read.return_value = b'.'
     assert openstack._determine_version({}, 'https://endpoint/') is None
@@ -389,3 +403,177 @@ def test_is_base64():
     # Base64 encoded foobar string
     foobar = 'Zm9vYmFyCg==\n'.encode('utf8')
     assert openstack._is_base64(foobar)
+
+
+def test_get_credentials(subprocess, status, _normalize_creds, _save_creds,
+                         log_err):
+    subprocess.CalledProcessError = CalledProcessError
+    openstack.hookenv.config.return_value = config = {
+        'credentials': None,
+    }
+    subprocess.run.side_effect = CalledProcessError(1, 'cmd', b'out', b'foo')
+    with pytest.raises(CalledProcessError):
+        openstack.get_credentials()
+
+    subprocess.run.side_effect = CalledProcessError(1, 'cmd', b'out',
+                                                    b'permission denied')
+    _normalize_creds.side_effect = ValueError('unsupported auth-type')
+    assert openstack.get_credentials() is False
+    status.blocked.assert_called_with('unsupported auth-type')
+
+    _normalize_creds.reset_mock()
+    status.blocked.reset_mock()
+    subprocess.run.side_effect = FileNotFoundError()
+    assert openstack.get_credentials() is False
+    status.blocked.assert_called_with('unsupported auth-type')
+    assert _normalize_creds.call_args_list == [
+        mock.call({'credentials': None}),
+    ]
+
+    status.blocked.reset_mock()
+    _normalize_creds.reset_mock()
+    _normalize_creds.side_effect = lambda a: a
+    stdout = b'{}'
+    subprocess.run.side_effect = lambda *a, **k: mock.Mock(stdout=stdout)
+    assert openstack.get_credentials() is False
+    status.blocked.assert_called_with(
+        'missing credentials; grant with `juju trust` or set via config')
+    assert _normalize_creds.call_args_list == [
+        mock.call({}),
+        mock.call({'credentials': None}),
+    ]
+
+    _normalize_creds.reset_mock()
+    stdout = b'{"foo": "bar"}'
+    assert openstack.get_credentials() is False
+    assert _normalize_creds.call_args_list == [
+        mock.call({'foo': 'bar'}),
+        mock.call({'credentials': None}),
+    ]
+
+    status.blocked.reset_mock()
+    subprocess.run.side_effect = FileNotFoundError()
+    config['credentials'] = 'foo'
+    assert openstack.get_credentials() is False
+    status.blocked.assert_called_with(
+        'invalid value for credentials config: Incorrect padding')
+
+    status.blocked.reset_mock()
+    subprocess.run.side_effect = FileNotFoundError()
+    config['credentials'] = 'ewo='
+    assert openstack.get_credentials() is False
+    status.blocked.assert_called_with(
+        'invalid value for credentials config: Expecting property name '
+        'enclosed in double quotes: line 2 column 1 (char 2)')
+
+    _normalize_creds.reset_mock()
+    subprocess.run.side_effect = FileNotFoundError()
+    config['credentials'] = 'eyJmb28iOiAiYmFyIn0K'
+    assert openstack.get_credentials() is False
+    assert _normalize_creds.call_args_list == [
+        mock.call({'foo': 'bar'}),
+        mock.call({'credentials': 'eyJmb28iOiAiYmFyIn0K'}),
+    ]
+
+    config.update({
+        'credentials': None,
+        'auth_url': 'auth-url',
+        'region': 'region',
+        'username': 'username',
+        'password': 'password',
+        'user_domain_name': 'user-domain-name',
+        'project_domain_name': 'project-domain-name',
+        'project_name': 'project-name',
+    })
+    expected = config.copy()
+    del expected['credentials']
+    expected['endpoint_tls_ca'] = ''
+    assert openstack.get_credentials() is True
+    _save_creds.assert_called_with(expected)
+
+    _save_creds.reset_mock()
+    status.blocked.reset_mock()
+    config['region'] = ''
+    assert openstack.get_credentials() is False
+    assert not _save_creds.called
+    status.blocked.assert_called_with('missing required credential: region')
+
+    status.blocked.reset_mock()
+    config['username'] = ''
+    assert openstack.get_credentials() is False
+    status.blocked.assert_called_with('missing required credentials: '
+                                      'region, username')
+
+
+def test_normalize_creds(_determine_version, log_err):
+    _determine_version.return_value = '3'
+    with pytest.raises(ValueError) as excinfo:
+        openstack._normalize_creds({'auth-type': 'allow'})
+    assert str(excinfo.value) == 'unsupported auth-type in credentials: allow'
+    with pytest.raises(ValueError) as excinfo:
+        openstack._normalize_creds({
+            'endpoint': '/',
+            'credential': {
+                'attributes': {
+                    'auth-type': 'allow',
+                },
+            },
+        })
+    assert str(excinfo.value) == 'unsupported auth-type in credentials: allow'
+    assert openstack._normalize_creds({}) == dict(
+        auth_url='',
+        region='',
+        username=None,
+        password=None,
+        user_domain_name=None,
+        project_domain_name=None,
+        project_name=None,
+        endpoint_tls_ca=None,
+        version='3',
+    )
+    _determine_version.assert_called_with({}, '')
+    attrs = {
+        'auth-url': 'auth-url',
+        'region': 'us-east-1',
+        'username': 'username',
+        'password': 'password',
+        'user-domain-name': 'user-domain-name',
+        'project-domain-name': 'project-domain-name',
+        'tenant-name': 'tenant-name',
+    }
+    expected = dict(
+        auth_url='auth-url',
+        region='us-east-1',
+        username='username',
+        password='password',
+        user_domain_name='user-domain-name',
+        project_domain_name='project-domain-name',
+        project_name='tenant-name',
+        endpoint_tls_ca=None,
+        version='3',
+    )
+    assert openstack._normalize_creds(attrs) == expected
+    assert openstack._normalize_creds({
+        'endpoint': 'endpoint',
+        'region': 'region',
+        'credential': {'attributes': attrs},
+    }) == dict(expected, auth_url='endpoint', region='region')
+
+    attrs['project-name'] = expected['project_name'] = 'project-name'
+    assert openstack._normalize_creds(attrs) == expected
+
+    attrs['ca-certificates'] = []
+    assert openstack._normalize_creds(attrs) == expected
+
+    attrs['ca-certificates'] = ['ca-cert']
+    expected['endpoint_tls_ca'] = 'Y2EtY2VydA=='
+    assert openstack._normalize_creds(attrs) == expected
+
+    attrs['ca-certificates'] = ['Y2EtY2VydA==']
+    assert openstack._normalize_creds(attrs) == expected
+
+    attrs['cacertificates'] = attrs.pop('ca-certificates')
+    assert openstack._normalize_creds(attrs) == expected
+
+    attrs['endpoint-tls-ca'] = attrs.pop('cacertificates')[0]
+    assert openstack._normalize_creds(attrs) == expected
