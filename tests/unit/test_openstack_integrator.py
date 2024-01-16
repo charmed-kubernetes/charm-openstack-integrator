@@ -9,7 +9,6 @@ from unittest import mock
 import subprocess
 from urllib.request import urlopen
 from urllib.error import HTTPError
-from time import sleep
 import charms.layer
 
 from charms.unit_test import patch_fixture
@@ -388,7 +387,8 @@ def test_wait_not_pending(impl):
             {"provisioning_status": "ACTIVE"},
         ]
     )
-    lb._wait_not_pending(test_func)
+    with mock.patch.object(openstack, "sleep") as sleep:
+        lb._wait_not_pending(test_func)
     assert sleep.call_count == 3
 
     test_func = mock.Mock(

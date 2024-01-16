@@ -14,6 +14,10 @@ from charms.reactive.relations import endpoint_from_name
 
 from charms import layer
 
+SUPPORTED_LB_PROTOS = ["udp", "tcp"]
+SUPPORTED_LB_ALGS = ["Default", "SourceIP", "SourceIPProtocol"]
+SUPPORTED_LB_HC_PROTOS = ["http", "https", "tcp"]
+
 
 @when_all("snap.installed.openstackclients")
 def set_app_ver():
@@ -139,21 +143,85 @@ def write_credentials():
     credentials.expose_credentials(reformatted_creds)
 
 
-@when_all("charm.openstack.creds.set", "endpoint.loadbalancer.joined")
+def allow_lb_consumers_to_read_requests():
+    lb_consumers = endpoint_from_name("lb-consumers")
+    lb_consumers.follower_perms(read=True)
+    return lb_consumers
+
+
+def _lb_algo(request):
+    """
+    Choose a supported algorithm for the request.
+    """
+    if not request.algorithm:
+        return "Default"
+    for supported in SUPPORTED_LB_ALGS:
+        if supported in request.algorithm:
+            return supported
+    return None
+
+
+def _validate_loadbalancer_request(request):
+    """
+    Validate the incoming request.
+
+    :return: None
+    """
+    response = request.response
+    error_fields = response.error_fields = {}
+    if not request.public:
+        error_fields["public"] = "Only support public loadbalancers"
+
+    if request.protocol.value not in SUPPORTED_LB_PROTOS:
+        error_fields["protocol"] = "Must be one of: {}".format(
+            ", ".join(SUPPORTED_LB_PROTOS)
+        )
+
+    if not _lb_algo(request):
+        error_fields["algorithm"] = "Must be one of: {}".format(
+            ", ".join(SUPPORTED_LB_ALGS)
+        )
+
+    if request.tls_termination:
+        error_fields["tls_termination"] = "Not yet supported"
+
+    for i, hc in enumerate(request.health_checks):
+        if hc.protocol.value not in SUPPORTED_LB_HC_PROTOS:
+            error_fields["hc[{}].protocol".format(i)] = "Must be one of: {}".format(
+                ", ".join(SUPPORTED_LB_PROTOS)
+            )
+        if hc.path and hc.protocol.value not in ("http", "https"):
+            error_fields["hc[{}].path".format(i)] = "Only valid with http(s) protocol"
+
+    if error_fields:
+        hookenv.log("Unsupported features: {}".format(error_fields), hookenv.ERROR)
+    return response
+
+
+@when_all("charm.openstack.creds.set", "endpoint.lb-consumers.requests_changed")
 @when_not("upgrade.series.in-progress")
 def create_or_update_loadbalancers():
     layer.status.maintenance("Managing load balancers")
-    lb_clients = endpoint_from_name("loadbalancer")
-    try:
-        for request in lb_clients.requests:
-            if not request.members:
-                continue
-            lb = layer.openstack.manage_loadbalancer(
-                request.application_name, request.members
-            )
-            request.set_address_port(lb.fip or lb.address, lb.port)
-    except layer.openstack.OpenStackError as e:
-        layer.status.blocked(str(e))
+    config = hookenv.config()
+    lb_consumers = allow_lb_consumers_to_read_requests()
+    lb_port = str(config["lb-port"])
+    errors = []
+    for request in lb_consumers.new_requests:
+        response = _validate_loadbalancer_request(request)
+        if not response.error_fields:
+            try:
+                members = [
+                    (addr, request.port_mapping[lb_port]) for addr in request.backends
+                ]
+                lb = layer.openstack.manage_loadbalancer(request.name, members)
+                request.address = lb.fip or lb.address
+            except layer.openstack.OpenStackError as e:
+                response.error = response.error_types.provider_error
+                response.error_message = str(e)
+                errors.append(str(e))
+        lb_consumers.send_response(request)
+    if errors:
+        layer.status.blocked(", ".join(errors))
 
 
 @hook("stop")

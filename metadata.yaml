@@ -17,8 +17,8 @@ provides:
     interface: openstack-integration
   credentials:
     interface: keystone-credentials
-  loadbalancer:
-    interface: public-address
+  lb-consumers:
+    interface: loadbalancer
 resources:
   openstackclients:
     type: file
