@@ -209,9 +209,9 @@ def manage_loadbalancer(
     fip_net = config["lb-floating-network"]
     manage_secgrps = config["manage-security-groups"]
     lb_manager = LoadBalancer.get_or_create(
-        app_name, lb_port, subnet, lb_algorithm, fip_net, manage_secgrps
+        app_name, str(lb_port), subnet, lb_algorithm, fip_net, manage_secgrps
     )
-    lb_manager.update_members(members)
+    lb_manager.update_members([(addr, str(port)) for addr, port in members])
     return lb_manager
 
 
@@ -983,6 +983,7 @@ class OctaviaLBImpl(BaseLBImpl):
 
     def create_member(self, member):
         addr, port = member
+        log(f"Creating lb member {addr}:{port} on {self.subnet} {self.name}")
         _openstack(
             "loadbalancer",
             "member",

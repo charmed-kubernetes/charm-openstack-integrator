@@ -194,10 +194,10 @@ def _validate_loadbalancer_request(request):
             error_fields["hc[{}].path".format(i)] = "Only valid with http(s) protocol"
 
     config = hookenv.config()
-    lb_port = str(config["lb-port"])
+    lb_port = int(config["lb-port"])
     remote_port = request.port_mapping.get(lb_port)
-    if not remote_port:
-        error_fields["ports"] = f"Not configured for {lb_port}"
+    if request.backends and not remote_port:
+        error_fields["port_mapping"] = f"Not configured for {lb_port}"
 
     if error_fields:
         hookenv.log("Unsupported features: {}".format(error_fields), hookenv.ERROR)
@@ -232,7 +232,7 @@ def manage_loadbalancers_via_loadbalancer():
 def manage_loadbalancers_via_lb_consumers():
     layer.status.maintenance("Managing load balancers")
     config = hookenv.config()
-    lb_port = str(config["lb-port"])
+    lb_port = int(config["lb-port"])
     lb_consumers = allow_lb_consumers_to_read_requests()
     errors = []
     for request in lb_consumers.new_requests:
@@ -241,13 +241,13 @@ def manage_loadbalancers_via_lb_consumers():
             lb_consumers.send_response(request)
             continue
 
-        remote_port = request.port_mapping[lb_port]
+        remote_port = request.port_mapping.get(lb_port)
         try:
             members = [(addr, remote_port) for addr in request.backends]
             lb = layer.openstack.manage_loadbalancer(
                 request.name, members, lb_port, _lb_algo(request), "lb-consumers"
             )
-            request.address = lb.fip or lb.address
+            response.address = lb.fip or lb.address
         except layer.openstack.OpenStackError as e:
             response.error = response.error_types.provider_error
             response.error_message = str(e)

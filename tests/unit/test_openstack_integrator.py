@@ -206,17 +206,18 @@ def test_manage_loadbalancer(mock_lb, mock_subnet):
         "manage-security-groups": False,
     }
     lb_manager = mock_lb.get_or_create.return_value
+    members = [("1.2.3.4", 80)]
     assert (
         openstack.manage_loadbalancer(
-            "my-ha-app", [], lb_port, lb_method, "lb-consumers"
+            "my-ha-app", members, lb_port, lb_method, "lb-consumers"
         )
         is lb_manager
     )
-    mock_subnet.assert_called_once_with([], "lb-consumers")
+    mock_subnet.assert_called_once_with(members, "lb-consumers")
     mock_lb.get_or_create.assert_called_once_with(
         "my-ha-app", lb_port, mock_subnet.return_value, lb_method, "fip-network", False
     )
-    lb_manager.update_members.assert_called_once_with([])
+    lb_manager.update_members.assert_called_once_with([("1.2.3.4", "80")])
 
 
 @mock.patch.object(openstack.LoadBalancer, "_add_member_sg")
