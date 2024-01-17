@@ -17,6 +17,10 @@ provides:
     interface: openstack-integration
   credentials:
     interface: keystone-credentials
+  loadbalancer:
+    interface: public-address
+    # Use of this relation is strongly discouraged in favor of the more
+    # explicit lb-consumers relation.
   lb-consumers:
     interface: loadbalancer
 resources:

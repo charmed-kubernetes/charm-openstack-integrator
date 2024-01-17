@@ -1,4 +1,5 @@
 .tox/
 __pycache__/
 *.pyc
+.coverage
 *.charm

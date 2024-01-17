@@ -156,7 +156,7 @@ def detect_octavia():
     return False
 
 
-def get_ingress_address(endpoint_name="lb-consumers"):
+def _get_relation_addresses(endpoint_name):
     try:
         network_info = hookenv.network_get(endpoint_name)
     except NotImplementedError:
@@ -182,9 +182,15 @@ def get_ingress_address(endpoint_name="lb-consumers"):
     return addresses
 
 
-def _default_subnet(members):
+def _default_subnet(members, endpoint_name):
     """Find the subnet which contains the given address."""
-    address, _ = members[0]
+    if members:
+        address, _ = members[0]
+    elif addresses := _get_relation_addresses(endpoint_name):
+        address = addresses[0]
+    else:
+        log_err("Unable to find addresses for relation: {}", endpoint_name)
+        raise OpenStackLBError(action="create", exc=False)
     address = ip_address(address)
     for subnet_info in _openstack("subnet", "list"):
         subnet = ip_network(subnet_info["Subnet"])
@@ -195,15 +201,15 @@ def _default_subnet(members):
         raise OpenStackLBError(action="create", exc=False)
 
 
-def manage_loadbalancer(app_name, members):
+def manage_loadbalancer(
+    app_name, members, lb_port, lb_algorithm, endpoint_name="lb-consumers"
+):
     log("Managing load balancer for {}", app_name)
-    subnet = config["lb-subnet"] or _default_subnet(members)
+    subnet = config["lb-subnet"] or _default_subnet(members, endpoint_name)
     fip_net = config["lb-floating-network"]
-    port = str(config["lb-port"])
-    lb_algorithm = config["lb-method"]
     manage_secgrps = config["manage-security-groups"]
     lb_manager = LoadBalancer.get_or_create(
-        app_name, port, subnet, lb_algorithm, fip_net, manage_secgrps
+        app_name, lb_port, subnet, lb_algorithm, fip_net, manage_secgrps
     )
     lb_manager.update_members(members)
     return lb_manager
