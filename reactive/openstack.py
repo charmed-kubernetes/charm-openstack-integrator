@@ -1,3 +1,4 @@
+from typing import TYPE_CHECKING
 from distutils.util import strtobool
 from charmhelpers.core import hookenv
 from charms.reactive import (
@@ -13,6 +14,12 @@ from charms.reactive import (
 from charms.reactive.relations import endpoint_from_name
 
 from charms import layer
+
+if TYPE_CHECKING:
+    from loadbalancer_interface.schemas.v1 import (
+        Request as LBRequest,
+        Response as LBResponse,
+    )
 
 SUPPORTED_LB_PROTOS = ["udp", "tcp"]
 SUPPORTED_LB_ALGS = ["ROUND_ROBIN", "LEAST_CONNECTIONS", "SOURCE_IP"]
@@ -161,11 +168,9 @@ def _lb_algo(request):
     return None
 
 
-def _validate_loadbalancer_request(request):
+def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
     """
     Validate the incoming request.
-
-    :return: None
     """
     response = request.response
     error_fields = response.error_fields = {}
