@@ -5,10 +5,10 @@ import re
 import os
 import subprocess
 import tempfile
-import time
 from base64 import b64decode, b64encode
 from ipaddress import ip_address, ip_network
 from pathlib import Path
+from time import sleep
 from traceback import format_exc
 from urllib.request import urlopen
 from urllib.parse import urlparse
@@ -156,9 +156,41 @@ def detect_octavia():
     return False
 
 
-def _default_subnet(members):
+def _get_relation_addresses(endpoint_name):
+    try:
+        network_info = hookenv.network_get(endpoint_name)
+    except NotImplementedError:
+        network_info = {}
+
+    if not network_info or "ingress-addresses" not in network_info:
+        # if they don't have ingress-addresses they are running a juju that
+        # doesn't support spaces, so just return the private address
+        return [hookenv.unit_get("private-address")]
+
+    addresses = network_info["ingress-addresses"]
+
+    # Need to prefer non-fan IP addresses due to various issues, e.g.
+    # https://bugs.launchpad.net/charm-gcp-integrator/+bug/1822997
+    # Fan typically likes to use IPs in the 240.0.0.0/4 block, so we'll
+    # prioritize those last. Not technically correct, but good enough.
+    try:
+        sort_key = lambda a: int(a.partition(".")[0]) >= 240  # noqa: E731
+        addresses = sorted(addresses, key=sort_key)
+    except Exception:
+        hookenv.log(format_exc())
+
+    return addresses
+
+
+def _default_subnet(members, endpoint_name):
     """Find the subnet which contains the given address."""
-    address, _ = members[0]
+    if members:
+        address, _ = members[0]
+    elif addresses := _get_relation_addresses(endpoint_name):
+        address = addresses[0]
+    else:
+        log_err("Unable to find addresses for relation: {}", endpoint_name)
+        raise OpenStackLBError(action="create", exc=False)
     address = ip_address(address)
     for subnet_info in _openstack("subnet", "list"):
         subnet = ip_network(subnet_info["Subnet"])
@@ -169,17 +201,17 @@ def _default_subnet(members):
         raise OpenStackLBError(action="create", exc=False)
 
 
-def manage_loadbalancer(app_name, members):
+def manage_loadbalancer(
+    app_name, members, lb_port, lb_algorithm, endpoint_name="lb-consumers"
+):
     log("Managing load balancer for {}", app_name)
-    subnet = config["lb-subnet"] or _default_subnet(members)
+    subnet = config["lb-subnet"] or _default_subnet(members, endpoint_name)
     fip_net = config["lb-floating-network"]
-    port = str(config["lb-port"])
-    lb_algorithm = config["lb-method"]
     manage_secgrps = config["manage-security-groups"]
     lb_manager = LoadBalancer.get_or_create(
-        app_name, port, subnet, lb_algorithm, fip_net, manage_secgrps
+        app_name, str(lb_port), subnet, lb_algorithm, fip_net, manage_secgrps
     )
-    lb_manager.update_members(members)
+    lb_manager.update_members([(addr, str(port)) for addr, port in members])
     return lb_manager
 
 
@@ -595,7 +627,7 @@ class LoadBalancer:
             lb_status = show_func()["provisioning_status"]
             if not lb_status.startswith("PENDING_"):
                 break
-            time.sleep(2)
+            sleep(2)
 
         if lb_status != "ACTIVE":
             log_err(
@@ -951,6 +983,7 @@ class OctaviaLBImpl(BaseLBImpl):
 
     def create_member(self, member):
         addr, port = member
+        log(f"Creating lb member {addr}:{port} on {self.subnet} {self.name}")
         _openstack(
             "loadbalancer",
             "member",

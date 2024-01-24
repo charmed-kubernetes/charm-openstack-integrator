@@ -9,7 +9,6 @@ from unittest import mock
 import subprocess
 from urllib.request import urlopen
 from urllib.error import HTTPError
-from time import sleep
 import charms.layer
 
 from charms.unit_test import patch_fixture
@@ -175,14 +174,50 @@ def test_run_with_creds(_load_creds):
 
 def test_default_subnet(_openstack):
     members = [("192.168.0.1", 80), ("10.0.0.1", 80)]
+    endpoint = "unused"
     _openstack.return_value = [
         {"Name": "a", "Subnet": "192.168.0.0/24"},
         {"Name": "b", "Subnet": "10.0.0.0/16"},
     ]
-    assert openstack._default_subnet(members) == "a"
-    assert openstack._default_subnet(list(reversed(members))) == "b"
+    openstack.hookenv.unit_get.return_value = "192.168.0.2"
+    openstack.hookenv.network_get.side_effect = [
+        {},
+        {"ingress-addresses": ["10.0.0.2", "252.0.162.1"]},
+    ]
+
+    assert openstack._default_subnet(members, endpoint) == "a"
+    assert openstack._default_subnet([], endpoint) == "a"
+    assert openstack._default_subnet([], endpoint) == "b"
+    assert openstack._default_subnet(list(reversed(members)), endpoint) == "b"
     with pytest.raises(openstack.OpenStackLBError):
-        openstack._default_subnet([("10.1.0.1", 80)])
+        openstack._default_subnet([("10.1.0.1", 80)], endpoint)
+
+
+@mock.patch.object(openstack, "_default_subnet")
+@mock.patch.object(openstack, "LoadBalancer")
+def test_manage_loadbalancer(mock_lb, mock_subnet):
+    lb_method = "ROUND_ROBIN"
+    lb_port = "6443"
+    openstack.config = {
+        "lb-subnet": "",
+        "lb-floating-network": "fip-network",
+        "lb-port": lb_port,
+        "lb-method": lb_method,
+        "manage-security-groups": False,
+    }
+    lb_manager = mock_lb.get_or_create.return_value
+    members = [("1.2.3.4", 80)]
+    assert (
+        openstack.manage_loadbalancer(
+            "my-ha-app", members, lb_port, lb_method, "lb-consumers"
+        )
+        is lb_manager
+    )
+    mock_subnet.assert_called_once_with(members, "lb-consumers")
+    mock_lb.get_or_create.assert_called_once_with(
+        "my-ha-app", lb_port, mock_subnet.return_value, lb_method, "fip-network", False
+    )
+    lb_manager.update_members.assert_called_once_with([("1.2.3.4", "80")])
 
 
 @mock.patch.object(openstack.LoadBalancer, "_add_member_sg")
@@ -388,7 +423,8 @@ def test_wait_not_pending(impl):
             {"provisioning_status": "ACTIVE"},
         ]
     )
-    lb._wait_not_pending(test_func)
+    with mock.patch.object(openstack, "sleep") as sleep:
+        lb._wait_not_pending(test_func)
     assert sleep.call_count == 3
 
     test_func = mock.Mock(
