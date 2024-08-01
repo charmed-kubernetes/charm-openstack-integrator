@@ -38,6 +38,7 @@ def set_app_ver():
     "config.changed.username",
     "config.changed.password",
     "config.changed.project-name",
+    "config.changed.project-id",
     "config.changed.user-domain-name",
     "config.changed.project-domain-name",
     "config.changed.region",

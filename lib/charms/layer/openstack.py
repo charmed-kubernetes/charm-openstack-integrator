@@ -60,6 +60,7 @@ def update_credentials():
         "project_name",
     ]
     optional_fields = [
+        "project_id",
         "endpoint_tls_ca",
     ]
     # pre-populate with empty values to avoid key and arg errors
@@ -286,6 +287,7 @@ def _normalize_creds(creds_data):
         password=attrs.get("password"),
         user_domain_name=attrs.get("user-domain-name"),
         project_domain_name=attrs.get("project-domain-name"),
+        project_id=attrs.get("project-id"),
         project_name=attrs.get("project-name", attrs.get("tenant-name")),
         endpoint_tls_ca=ca_cert,
         version=_determine_version(attrs, endpoint, ca_cert),
@@ -324,6 +326,7 @@ def _run_with_creds(*args):
         "OS_PASSWORD": creds["password"],
         "OS_REGION_NAME": creds["region"],
         "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
+        "OS_PROJECT_ID": creds["project_id"],
         "OS_PROJECT_NAME": creds["project_name"],
         "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
     }
