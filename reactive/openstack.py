@@ -1,5 +1,5 @@
 from typing import TYPE_CHECKING
-from distutils.util import strtobool
+from str2bool import str2bool
 from charmhelpers.core import hookenv
 from charms.reactive import (
     hook,
@@ -101,7 +101,7 @@ def handle_requests():
     config = hookenv.config()
     has_octavia = layer.openstack.detect_octavia()
     try:
-        manage_security_groups = strtobool(config["manage-security-groups"])
+        manage_security_groups = str2bool(config["manage-security-groups"])
         # use bool() to force True / False instead of 1 / 0
         manage_security_groups = bool(manage_security_groups)
     except ValueError:
