@@ -29,6 +29,10 @@ options:
     description: Password of a valid user set in keystone.
     type: string
     default: ""
+  project-id:
+    description: ID of project where you want to create your resources.
+    type: string
+    default: ""
   project-name:
     description: Name of project where you want to create your resources.
     type: string

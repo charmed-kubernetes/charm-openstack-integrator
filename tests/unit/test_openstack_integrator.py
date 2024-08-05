@@ -127,6 +127,7 @@ def test_run_with_creds(_load_creds):
         "password": "password",
         "user_domain_name": "user_domain_name",
         "project_domain_name": "project_domain_name",
+        "project_id": "project_id",
         "project_name": "project_name",
         "endpoint_tls_ca": _b64("endpoint_tls_ca"),
         "version": "3",
@@ -145,6 +146,7 @@ def test_run_with_creds(_load_creds):
             "OS_REGION_NAME": "region",
             "OS_USER_DOMAIN_NAME": "user_domain_name",
             "OS_PROJECT_NAME": "project_name",
+            "OS_PROJECT_ID": "project_id",
             "OS_PROJECT_DOMAIN_NAME": "project_domain_name",
             "OS_IDENTITY_API_VERSION": "3",
             "OS_CACERT": str(openstack.CA_CERT_FILE),
@@ -637,6 +639,7 @@ def test_update_credentials(_normalize_creds, _save_creds, log_err):
     expected = config.copy()
     del expected["credentials"]
     expected["endpoint_tls_ca"] = ""
+    expected["project_id"] = ""
     assert openstack.update_credentials() is True
     _save_creds.assert_called_with(expected)
 
@@ -679,6 +682,7 @@ def test_normalize_creds(_determine_version, log_err):
         password=None,
         user_domain_name=None,
         project_domain_name=None,
+        project_id=None,
         project_name=None,
         endpoint_tls_ca=None,
         version="3",
@@ -690,6 +694,7 @@ def test_normalize_creds(_determine_version, log_err):
         "username": "username",
         "password": "password",
         "user-domain-name": "user-domain-name",
+        "project-id": "project-id",
         "project-domain-name": "project-domain-name",
         "tenant-name": "tenant-name",
     }
@@ -700,6 +705,7 @@ def test_normalize_creds(_determine_version, log_err):
         password="password",
         user_domain_name="user-domain-name",
         project_domain_name="project-domain-name",
+        project_id="project-id",
         project_name="tenant-name",
         endpoint_tls_ca=None,
         version="3",
@@ -712,6 +718,9 @@ def test_normalize_creds(_determine_version, log_err):
             "credential": {"attributes": attrs},
         }
     ) == dict(expected, auth_url="endpoint", region="region")
+
+    attrs["project-id"] = expected["project_id"] = "project-id"
+    assert openstack._normalize_creds(attrs) == expected
 
     attrs["project-name"] = expected["project_name"] = "project-name"
     assert openstack._normalize_creds(attrs) == expected
