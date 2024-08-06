@@ -62,6 +62,10 @@ def update_credentials():
     optional_fields = [
         "project_id",
         "endpoint_tls_ca",
+        "domain_id",
+        "domain_name",
+        "user_domain_id",
+        "project_domain_id",
     ]
     # pre-populate with empty values to avoid key and arg errors
     creds_data = {field: "" for field in required_fields + optional_fields}
@@ -286,9 +290,13 @@ def _normalize_creds(creds_data):
         username=attrs.get("username"),
         password=attrs.get("password"),
         user_domain_name=attrs.get("user-domain-name"),
+        user_domain_id=attrs.get("user-domain-id"),
+        domain_name=attrs.get("domain-name"),
+        domain_id=attrs.get("domain-id"),
         project_domain_name=attrs.get("project-domain-name"),
-        project_id=attrs.get("project-id"),
-        project_name=attrs.get("project-name", attrs.get("tenant-name")),
+        project_domain_id=attrs.get("project-domain-id"),
+        project_id=attrs.get("project-id") or attrs.get("tenant-id"),
+        project_name=attrs.get("project-name") or attrs.get("tenant-name"),
         endpoint_tls_ca=ca_cert,
         version=_determine_version(attrs, endpoint, ca_cert),
     )
@@ -326,14 +334,23 @@ def _run_with_creds(*args):
         "OS_PASSWORD": creds["password"],
         "OS_REGION_NAME": creds["region"],
         "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
-        "OS_PROJECT_ID": creds["project_id"],
         "OS_PROJECT_NAME": creds["project_name"],
         "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
     }
-    if creds.get("version"):
-        # version should always be added by _normalize_creds, but it might
-        # be empty in which case we shouldn't set the env vars
-        env["OS_IDENTITY_API_VERSION"] = creds["version"]
+
+    _cred_to_o7k_env = {
+        "domain_id": "OS_DOMAIN_ID",
+        "domain_name": "OS_DOMAIN_NAME",
+        "project_domain_id": "OS_PROJECT_DOMAIN_ID",
+        "project_id": "OS_PROJECT_ID",
+        "user_domain_id": "OS_USER_DOMAIN_ID",
+        "version": "OS_IDENTITY_API_VERSION",
+    }
+    for k, v in _cred_to_o7k_env.items():
+        if found := creds.get(k):
+            # keys should always be added by _normalize_creds, but its value
+            # might be empty in which case we shouldn't set the env vars
+            env[v] = found
     if creds["endpoint_tls_ca"]:
         ca_cert = b64decode(creds["endpoint_tls_ca"].encode("utf8"))
         CA_CERT_FILE.parent.mkdir(parents=True, exist_ok=True)
