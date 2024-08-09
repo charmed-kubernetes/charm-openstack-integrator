@@ -29,6 +29,14 @@ options:
     description: Password of a valid user set in keystone.
     type: string
     default: ""
+  domain-id:
+    description: ID of domain where you want to create your resources.
+    type: string
+    default: ""
+  domain-name:
+    description: Name of domain where you want to create your resources.
+    type: string
+    default: ""
   project-id:
     description: ID of project where you want to create your resources.
     type: string
@@ -41,8 +49,16 @@ options:
     description: Name of the user domain where you want to create your resources.
     type: string
     default: ""
+  user-domain-id:
+    description: ID of the user domain where you want to create your resources.
+    type: string
+    default: ""
   project-domain-name:
     description: Name of the project domain where you want to create your resources.
+    type: string
+    default: ""
+  project-domain-id:
+    description: ID of the project domain where you want to create your resources.
     type: string
     default: ""
   region:

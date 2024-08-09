@@ -631,15 +631,19 @@ def test_update_credentials(_normalize_creds, _save_creds, log_err):
             "region": "region",
             "username": "username",
             "password": "password",
+            "domain_id": "domain-id",
+            "domain_name": "domain-name",
             "user_domain_name": "user-domain-name",
+            "user_domain_id": "user-domain-id",
             "project_domain_name": "project-domain-name",
+            "project_domain_id": "project-domain-id",
             "project_name": "project-name",
+            "project_id": "project-id",
         }
     )
     expected = config.copy()
     del expected["credentials"]
     expected["endpoint_tls_ca"] = ""
-    expected["project_id"] = ""
     assert openstack.update_credentials() is True
     _save_creds.assert_called_with(expected)
 
@@ -653,9 +657,7 @@ def test_update_credentials(_normalize_creds, _save_creds, log_err):
     status.blocked.reset_mock()
     config["username"] = ""
     assert openstack.update_credentials() is False
-    status.blocked.assert_called_with(
-        "missing required credentials: " "region, username"
-    )
+    status.blocked.assert_called_with("missing required credentials: region, username")
 
 
 def test_normalize_creds(_determine_version, log_err):
@@ -677,11 +679,15 @@ def test_normalize_creds(_determine_version, log_err):
     assert str(excinfo.value) == "unsupported auth-type in credentials: allow"
     assert openstack._normalize_creds({}) == dict(
         auth_url="",
+        domain_id=None,
+        domain_name=None,
         region="",
         username=None,
         password=None,
         user_domain_name=None,
+        user_domain_id=None,
         project_domain_name=None,
+        project_domain_id=None,
         project_id=None,
         project_name=None,
         endpoint_tls_ca=None,
@@ -703,8 +709,12 @@ def test_normalize_creds(_determine_version, log_err):
         region="us-east-1",
         username="username",
         password="password",
+        domain_id=None,
+        domain_name=None,
         user_domain_name="user-domain-name",
+        user_domain_id=None,
         project_domain_name="project-domain-name",
+        project_domain_id=None,
         project_id="project-id",
         project_name="tenant-name",
         endpoint_tls_ca=None,
