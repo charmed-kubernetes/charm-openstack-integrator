@@ -235,7 +235,7 @@ def test_get_or_create(create, cms, ams, kv):
         "members": [[1, 2], [3, 4]],
     }
     lb = openstack.LoadBalancer.get_or_create(*args)
-    assert not create.called
+    create.assert_not_called()
     assert lb.name == "openstack-integrator-1234-app"
     assert lb.port == "80"
     assert lb.subnet == "subnet"
@@ -249,25 +249,26 @@ def test_get_or_create(create, cms, ams, kv):
     assert lb.address == "address"
     assert lb.members == {(1, 2), (3, 4)}
     assert lb.is_created is True
-    assert not cms.called
-    assert not ams.called
+    cms.assert_not_called()
+    ams.assert_not_called()
 
     del kv().get.return_value["member_sg_id"]
     lb = openstack.LoadBalancer.get_or_create(*args)
-    assert cms.called
-    assert ams.called
+    cms.assert_called_once()
+    ams.assert_any_call((1, 2))
+    ams.assert_any_call((3, 4))
 
     cms.reset_mock()
     ams.reset_mock()
     kv().get.return_value = None
     lb = openstack.LoadBalancer.get_or_create(*args)
-    assert create.called
+    create.assert_called_once()
     assert lb.sg_id is None
     assert lb.fip is None
     assert lb.address is None
     assert lb.members == set()
-    assert not cms.called
-    assert not ams.called
+    cms.assert_not_called()
+    ams.assert_not_called()
 
     create.side_effect = subprocess.CalledProcessError(1, "cmd")
     with pytest.raises(openstack.OpenStackLBError):
@@ -303,13 +304,13 @@ def test_create_new(impl, log_err, kv):
     assert lb.address == "1.1.1.1"
     assert lb.members == [("member", "6443")]
     assert lb.is_created
-    assert impl.create_loadbalancer.called
-    assert not impl.create_secgrp.called
-    assert not impl.set_port_secgrp.called
-    assert impl.create_listener.called
-    assert impl.create_pool.called
-    assert not impl.list_fips.called
-    assert not impl.create_fip.called
+    impl.create_loadbalancer.assert_called_once()
+    impl.create_secgrp.assert_not_called()
+    impl.set_port_secgrp.assert_not_called()
+    impl.create_listener.assert_called_once()
+    impl.create_pool.assert_called_once()
+    impl.list_fips.assert_not_called()
+    impl.create_fip.assert_not_called()
 
     impl.find_secgrp.side_effect = ["sg_id", None]
     lb.create()
@@ -365,12 +366,12 @@ def test_create_recover(impl, kv):
     assert lb.address == "1.1.1.1"
     assert lb.members == ["members"]
     assert lb.is_created
-    assert not impl.create_loadbalancer.called
-    assert not impl.create_secgrp.called
-    assert not impl.create_listener.called
-    assert not impl.create_pool.called
-    assert not impl.create_fip.called
-    assert not impl.create_healthmonitor.called
+    impl.create_loadbalancer.assert_not_called()
+    impl.create_secgrp.assert_not_called()
+    impl.create_listener.assert_not_called()
+    impl.create_pool.assert_not_called()
+    impl.create_fip.assert_not_called()
+    impl.create_healthmonitor.assert_not_called()
 
 
 def test_load_from_cache(impl, kv):
@@ -480,32 +481,34 @@ def test_update_members(impl, _openstack):
     lb.address = "1.1.1.1"
     impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
     impl.list_sg_rules.return_value = []
+    impl.get_subnet_cidr.return_value = "1.1.1.0/24"
+
     lb.members = {(1, 2), (3, 4)}
     lb.update_members({(1, 2), (3, 4)})
-    assert not impl.delete_member.called
-    assert not impl.create_member.called
-    assert not impl.create_sg_rule.called
+    impl.delete_member.assert_not_called()
+    impl.create_member.assert_not_called()
+    impl.create_sg_rule.assert_not_called()
 
     lb.members = {(1, 2), (3, 4)}
     lb.update_members({(1, 2), (3, 4), (5, 6)})
-    assert not impl.delete_member.called
-    assert impl.create_member.called
+    impl.delete_member.assert_not_called()
+    impl.create_member.assert_called_once()
     assert lb.members == {(1, 2), (3, 4), (5, 6)}
-    assert impl.create_sg_rule.called
+    impl.create_sg_rule.assert_called_once()
 
     impl.create_member.reset_mock()
     impl.create_sg_rule.reset_mock()
     lb.members = {(1, 2), (3, 4)}
     lb.update_members({(1, 2)})
-    assert impl.delete_member.called
-    assert not impl.create_member.called
-    assert not impl.create_sg_rule.called
+    impl.delete_member.assert_called_once()
+    impl.create_member.assert_not_called()
+    impl.create_sg_rule.assert_not_called()
 
     impl.delete_member.reset_mock()
     lb.members = {(1, 2), (3, 4)}
     lb.update_members({(5, 6)})
-    assert impl.delete_member.called
-    assert impl.create_member.called
+    impl.delete_member.assert_called()
+    impl.create_member.assert_called()
 
     impl.delete_member.side_effect = subprocess.CalledProcessError(1, "cmd")
     lb.members = {(1, 2), (3, 4)}
@@ -651,7 +654,7 @@ def test_update_credentials(_normalize_creds, _save_creds, log_err):
     status.blocked.reset_mock()
     config["region"] = ""
     assert openstack.update_credentials() is False
-    assert not _save_creds.called
+    _save_creds.assert_not_called()
     status.blocked.assert_called_with("missing required credential: region")
 
     status.blocked.reset_mock()
