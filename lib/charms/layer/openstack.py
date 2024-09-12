@@ -478,6 +478,7 @@ class LoadBalancer:
         self.member_sg_id = None
         self.fip = None
         self.address = None
+        self.subnet_cidr = None
         self.members = set()
         self.is_created = False
         self._impl = self._get_impl()
@@ -541,6 +542,7 @@ class LoadBalancer:
             log("Created load balancer {} ({})", self.name, lb_info["id"])
             self._wait_lb_not_pending()
         self.address = lb_info["vip_address"]
+        self.subnet_cidr = self._impl.get_subnet_cidr(self.subnet)
 
         if self.manage_secgrps:
             sg_id = self._impl.find_secgrp(self.name)
@@ -743,8 +745,8 @@ class LoadBalancer:
             not in _openstack("port", "show", port_id)["security_group_ids"]
         ):
             self._impl.set_port_secgrp(port_id, self.member_sg_id)
-        if not self._find_matching_sg_rule(self.member_sg_id, self.address, port):
-            self._impl.create_sg_rule(self.member_sg_id, self.address, port)
+        if not self._find_matching_sg_rule(self.member_sg_id, self.subnet_cidr, port):
+            self._impl.create_sg_rule(self.member_sg_id, self.subnet_cidr, port)
 
     def delete(self):
         """Delete this loadbalancer and all of its resources."""
