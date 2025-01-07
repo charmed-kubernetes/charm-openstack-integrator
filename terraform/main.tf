@@ -16,4 +16,5 @@ resource "juju_application" "openstack_integrator" {
   constraints = var.constraints
   units       = var.units
   resources   = var.resources
+  trust       = true
 }
