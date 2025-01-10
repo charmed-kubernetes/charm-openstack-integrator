@@ -29,7 +29,6 @@ Upon applied, the module exports the following outputs:
 | - | - |
 | `app_name`|  Application name |
 | `provides`| Map of `provides` endpoints |
-| `requires`|  Map of `requires` endpoints |
 
 ## Usage
 
