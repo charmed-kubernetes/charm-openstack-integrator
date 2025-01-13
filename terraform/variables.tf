@@ -1,4 +1,4 @@
-# Copyright 2024 Canonical Ltd.
+# Copyright 2025 Canonical Ltd.
 # See LICENSE file for licensing details.
 
 variable "app_name" {
@@ -37,12 +37,12 @@ variable "constraints" {
 }
 
 variable "model" {
-  description = "Reference to a `juju_model`."
+  description = "Reference to a `juju_model` where this application is to be managed."
   type        = string
 }
 
 variable "resources" {
-  description = "Resources to use with the application. Details about available options can be found at https://charmhub.io/openstack-integrator/configurations."
+  description = "Resources to use with the application. Details about available options can be found at https://charmhub.io/openstack-integrator/resources."
   type        = map(string)
   default     = {}
 }
