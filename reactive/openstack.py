@@ -205,11 +205,46 @@ def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
         if hc.path and hc.protocol.value not in ("http", "https"):
             error_fields["hc[{}].path".format(i)] = "Only valid with http(s) protocol"
 
+    remote_port: Optional[int] = None
     config = hookenv.config()
     lb_port = int(config["lb-port"])
-    remote_port = request.port_mapping.get(lb_port)
-    if request.backends and not remote_port:
-        error_fields["port_mapping"] = f"Not configured for {lb_port}"
+    if request.port_mapping:
+        if len(request.port_mapping) > 1:
+            hookenv.log(
+                "Multiple port mappings are specified in the request.\n"
+                + f"{request.port_mapping=}",
+                hookenv.WARNING,
+            )
+
+        # NOTE(Hue): For compatibility reasons, we only respect a single
+        # port mapping. we will first try to find the port mapping for the
+        # configured `lb-port`.
+        # If that fails, we will use on from the port_mapping dict.
+
+        # Try finding the port mapping for the configured `lb-port`.
+        remote_port = request.port_mapping.get(lb_port)
+
+        # If the port mapping for the configured `lb-port` is not found,
+        # use one from the port_mapping dict.
+        if not remote_port:
+            hookenv.log(
+                f"No port mapping found for the configured `lb-port` ({lb_port})",
+                hookenv.WARNING,
+            )
+            lb_port, remote_port = list(request.port_mapping.items())[0]
+            hookenv.log(
+                f"Using custom port mapping {lb_port=}, {remote_port=}",
+                hookenv.WARNING,
+            )
+
+    if request.backends and (not remote_port or not lb_port):
+        error_fields["port_mapping"] = (
+            f"Invalid port mapping, {lb_port=}, {remote_port=}"
+        )
+
+    # Overwrite the port mapping with the one we found
+    if lb_port and remote_port:
+        request.port_mapping = {int(lb_port): int(remote_port)}
 
     if error_fields:
         hookenv.log("Unsupported features: {}".format(error_fields), hookenv.ERROR)
@@ -243,8 +278,6 @@ def manage_loadbalancers_via_loadbalancer():
 @when_not("upgrade.series.in-progress")
 def manage_loadbalancers_via_lb_consumers():
     layer.status.maintenance("Managing load balancers")
-    config = hookenv.config()
-    lb_port = int(config["lb-port"])
     lb_consumers = allow_lb_consumers_to_read_requests()
     errors = []
     for request in lb_consumers.new_requests:
@@ -253,7 +286,7 @@ def manage_loadbalancers_via_lb_consumers():
             lb_consumers.send_response(request)
             continue
 
-        remote_port = request.port_mapping.get(lb_port)
+        lb_port, remote_port = list(request.port_mapping.items())[0]
         try:
             members = [(addr, remote_port) for addr in request.backends]
             lb = layer.openstack.manage_loadbalancer(
