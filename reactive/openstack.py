@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 from str2bool import str2bool
 from charmhelpers.core import hookenv
 from charms.reactive import (
@@ -87,6 +87,14 @@ def no_requests():
     layer.status.active("Ready")
 
 
+def lb_manage_security_groups(config: Mapping[str, Any]) -> Optional[bool]:
+    """Returns if the charm supports Managed Security Groups."""
+    manage_security_groups = config["manage-security-groups"]
+    if not isinstance(manage_security_groups, bool):
+        manage_security_groups = str2bool(manage_security_groups)
+    return manage_security_groups
+
+
 @when_all(
     "snap.installed.openstackclients",
     "charm.openstack.creds.set",
@@ -104,16 +112,10 @@ def handle_requests():
     config_change = is_flag_set("config.changed")
     config = hookenv.config()
     has_octavia = layer.openstack.detect_octavia()
-    try:
-        manage_security_groups = str2bool(config["manage-security-groups"])
-        # use bool() to force True / False instead of 1 / 0
-        manage_security_groups = bool(manage_security_groups)
-    except ValueError:
-        layer.status.blocked("Invalid value for manage-security-groups config")
+    if (manage_security_groups := lb_manage_security_groups(config)) is None:
+        layer.status.blocked(f"Invalid value for config {manage_security_groups=}")
         return
-    except AttributeError:
-        # in case manage_security_groups is already bool
-        manage_security_groups = config["manage-security-groups"]
+
     creds_changed = is_flag_set("charm.openstack.creds.changed")
     refresh_requests = config_change or creds_changed
     requests = clients.all_requests if refresh_requests else clients.new_requests
