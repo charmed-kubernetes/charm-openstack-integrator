@@ -227,14 +227,11 @@ def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
         # If the port mapping for the configured `lb-port` is not found,
         # use one from the port_mapping dict.
         if not remote_port:
+            lb_port, remote_port = next(iter(request.port_mapping.items()))
             hookenv.log(
-                f"No port mapping found for the configured `lb-port` ({lb_port})",
-                hookenv.WARNING,
-            )
-            lb_port, remote_port = list(request.port_mapping.items())[0]
-            hookenv.log(
-                f"Using custom port mapping {lb_port=}, {remote_port=}",
-                hookenv.WARNING,
+                f"No port mapping found for the configured `lb-port`. "
+                f"Defaulting to the requested port pair {lb_port=} {remote_port=}",
+                hookenv.INFO,
             )
 
     if request.backends and (not remote_port or not lb_port):
@@ -243,6 +240,7 @@ def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
         )
 
     # Overwrite the port mapping with the one we found
+    # so that when we come out of the validation we have a single valid port mapping.
     if lb_port and remote_port:
         request.port_mapping = {int(lb_port): int(remote_port)}
 
@@ -286,7 +284,7 @@ def manage_loadbalancers_via_lb_consumers():
             lb_consumers.send_response(request)
             continue
 
-        lb_port, remote_port = list(request.port_mapping.items())[0]
+        lb_port, remote_port = next(iter(request.port_mapping.items()))
         try:
             members = [(addr, remote_port) for addr in request.backends]
             lb = layer.openstack.manage_loadbalancer(
