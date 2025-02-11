@@ -1,2 +1,3 @@
 loadbalancer_interface
 str2bool
+pbr<6.1.1
