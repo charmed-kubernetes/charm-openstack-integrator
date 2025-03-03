@@ -1,0 +1,33 @@
+name: openstack-integrator
+display-name: OpenStack Integrator
+summary: |
+  Proxy charm to enable OpenStack integrations via Juju relations.
+description: |
+  This charm can grant select permissions to instances of applications
+  related to it which enable integration with OpenStack specific features,
+  such as firewalls, load balancing, block storage, object storage, etc.
+docs: https://discourse.charmhub.io/t/openstack-integrator-docs-index/12980
+maintainers: ['Cory Johns <cory.johns@canonical.com>']
+series:
+  - jammy
+  - noble
+tags: ['openstack', 'native', 'integration']
+provides:
+  clients:
+    interface: openstack-integration
+  credentials:
+    interface: keystone-credentials
+  loadbalancer:
+    interface: public-address
+    # Use of this relation is strongly discouraged in favor of the more
+    # explicit lb-consumers relation.
+  lb-consumers:
+    interface: loadbalancer
+resources:
+  openstackclients:
+    type: file
+    filename: openstackclients.snap
+    description: |
+      Resource to side-load openstackclients snap in network-restricted deployments.
+      [DEPRECATED] in favor of using a Snap Store Proxy.
+      See https://ubuntu.com/kubernetes/docs/proxies for more details.
