@@ -7,7 +7,7 @@ applications:
     charm: {{charm}}
     trust: true
   openstack-cloud-controller:
-    charm: openstack-integrator
+    charm: openstack-cloud-controller
     channel: edge
   cinder-csi:
     charm: cinder-csi
