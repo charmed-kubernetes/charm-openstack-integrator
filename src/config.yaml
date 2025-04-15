@@ -168,3 +168,38 @@ options:
       (no floating IP) by default.
     type: boolean
     default: false
+  http-proxy:
+    description: |
+      The HTTP proxy to use for outgoing requests. This is used to configure
+      the OpenStack clients via the relation as well as all internal charm http
+      requests.
+    type: string
+    default: ""
+  https-proxy:
+    description: |
+      The HTTPS proxy to use for outgoing requests. This is used to configure
+      the OpenStack clients via the relation as well as all internal charm http
+      requests.
+    type: string
+    default: ""
+  no-proxy:
+    description: |
+      A comma-separated list of hosts and cidrs that excluded from proxying.
+      This is used to configure the OpenStack clients via the relation as well
+      as all internal charm http requests.
+    type: string
+    default: ""
+  proxy-source:
+    description: |
+      The source of the proxy configuration. This is used to configure the
+      OpenStack clients via the relation as well as all internal charm http
+      requests.
+
+      * As "charm", use the proxy settings from the configuration options above.
+      * As "model", use the proxy settings from the model configuration
+
+      (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
+
+      Valid values are: "charm" or "model". The default is "charm".
+    type: string
+    default: "charm"
