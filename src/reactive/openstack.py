@@ -90,7 +90,7 @@ def analyze_proxy():
 
     clients = endpoint_from_name("clients")
     for request in clients.all_requests:
-        if request.get_proxy_config() != settings:
+        if request.proxy_config != settings:
             updated = True
     if updated:
         layer.status.maintenance("Proxy settings changed")
