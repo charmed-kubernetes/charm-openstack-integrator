@@ -12,7 +12,7 @@ from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
-from typing import Mapping
+from typing import Mapping, Optional
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
@@ -330,29 +330,41 @@ def _load_creds():
 
 def _valid_url(url: str) -> bool:
     parsed = urlparse(url)
-    return all([parsed.scheme in ("http", "https"), parsed.hostname, parsed.port])
+    try:
+        return all(
+            [
+                parsed.scheme in ("http", "https"),
+                parsed.hostname or parsed.netloc,
+                isinstance(parsed.port, Optional[int]),
+            ]
+        )
+    except ValueError:
+        # urlparse can raise ValueError if the URL is malformed
+        return False
 
 
 @lru_cache(maxsize=1)
 def current_proxy_settings() -> Mapping[str, str]:
     config = hookenv.config()
     source = config["proxy-source"].lower()
-    src = config if source == "charm" else os.environ
-    if source == "charm":
-        settings = {
-            "HTTP_PROXY": src.get("http-proxy"),
-            "HTTPS_PROXY": src.get("https-proxy"),
-            "NO_PROXY": src.get("no-proxy"),
-        }
-    elif source == "model":
+    if source not in ("none", "model"):
+        status.blocked("Invalid proxy-source. Must be 'none' or 'model'.")
+
+    settings = {}
+    if source == "model":
+        src = os.environ
         settings = {
             "HTTP_PROXY": src.get("JUJU_CHARM_HTTP_PROXY"),
             "HTTPS_PROXY": src.get("JUJU_CHARM_HTTPS_PROXY"),
             "NO_PROXY": src.get("JUJU_CHARM_NO_PROXY"),
         }
-    else:
-        status.blocked("Invalid proxy-source. Must be 'charm' or 'model'.")
-        settings = {}
+    # Potentially add support for charm-provided proxy settings
+    # elif source == "charm":
+    #     settings = {
+    #         "HTTP_PROXY": config.get("http-proxy"),
+    #         "HTTPS_PROXY": config.get("https-proxy"),
+    #         "NO_PROXY": config.get("no-proxy"),
+    #     }
 
     if any(v is None for v in settings.values()):
         status.blocked("Incomplete proxy settings.")
