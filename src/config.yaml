@@ -168,3 +168,16 @@ options:
       (no floating IP) by default.
     type: boolean
     default: false
+  proxy-source:
+    description: |
+      The source of the proxy configuration. This is used to configure the
+      OpenStack clients via the relation as well as all charm http requests.
+
+      * As "none", ignore proxy settings
+      * As "model", use the proxy settings from the model configuration
+
+      (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
+
+      Valid values are: "none" or "model". The default is "none".
+    type: string
+    default: "none"

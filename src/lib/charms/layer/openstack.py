@@ -6,10 +6,13 @@ import os
 import subprocess
 import tempfile
 from base64 import b64decode, b64encode
+from contextlib import contextmanager
+from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
+from typing import Mapping, Optional
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
@@ -31,7 +34,6 @@ os.environ["HOME"] = "/root"
 CA_CERT_FILE = Path("/var/snap/openstackclients/common/ca.crt")
 MODEL_UUID = os.environ["JUJU_MODEL_UUID"]
 MODEL_SHORT_ID = MODEL_UUID.split("-")[-1]
-config = hookenv.config()
 
 
 def log(msg, *args):
@@ -210,6 +212,7 @@ def manage_loadbalancer(
     app_name, members, lb_port, lb_algorithm, endpoint_name="lb-consumers"
 ):
     log("Managing load balancer for {}", app_name)
+    config = hookenv.config()
     subnet = config["lb-subnet"] or _default_subnet(members, endpoint_name)
     fip_net = config["lb-floating-network"]
     manage_secgrps = config["manage-security-groups"]
@@ -325,8 +328,77 @@ def _load_creds():
     return kv().get("charm.openstack.full-creds")
 
 
+def _valid_url(url: str) -> bool:
+    parsed = urlparse(url)
+    try:
+        return all(
+            [
+                parsed.scheme in ("http", "https"),
+                parsed.hostname or parsed.netloc,
+                isinstance(parsed.port, Optional[int]),
+            ]
+        )
+    except ValueError:
+        # urlparse can raise ValueError if the URL is malformed
+        return False
+
+
+@lru_cache(maxsize=1)
+def current_proxy_settings() -> Mapping[str, str]:
+    config = hookenv.config()
+    source = config["proxy-source"].lower()
+    if source not in ("none", "model"):
+        status.blocked("Invalid proxy-source. Must be 'none' or 'model'.")
+
+    settings = {}
+    if source == "model":
+        src = os.environ
+        settings = {
+            "HTTP_PROXY": src.get("JUJU_CHARM_HTTP_PROXY"),
+            "HTTPS_PROXY": src.get("JUJU_CHARM_HTTPS_PROXY"),
+            "NO_PROXY": src.get("JUJU_CHARM_NO_PROXY"),
+        }
+    # Potentially add support for charm-provided proxy settings
+    # elif source == "charm":
+    #     settings = {
+    #         "HTTP_PROXY": config.get("http-proxy"),
+    #         "HTTPS_PROXY": config.get("https-proxy"),
+    #         "NO_PROXY": config.get("no-proxy"),
+    #     }
+
+    if any(v is None for v in settings.values()):
+        status.blocked("Incomplete proxy settings.")
+        log("Incomplete proxy settings. {}", settings)
+        return {}
+
+    for k, v in settings.items():
+        if k != "NO_PROXY" and v and not _valid_url(v):
+            status.blocked(f"Invalid Proxy URL '{v}'")
+            log("Invalid Proxy URL {}='{}'", k, v)
+            return {}
+
+    return settings
+
+
+@contextmanager
+def proxied_urlopen(*args, **kwargs):
+    settings = current_proxy_settings()
+    old_env = {key: os.environ.get(key) for key in settings}
+    try:
+        os.environ.update(settings)
+        with urlopen(*args, **kwargs) as response:
+            yield response
+    finally:
+        # Restore old environment values (or delete if they were originally unset)
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 def _run_with_creds(*args):
-    creds = _load_creds()
+    creds, proxy = _load_creds(), current_proxy_settings()
     env = {
         "PATH": os.pathsep.join(["/snap/bin", os.environ["PATH"]]),
         "OS_AUTH_URL": creds["auth_url"],
@@ -336,6 +408,7 @@ def _run_with_creds(*args):
         "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
         "OS_PROJECT_NAME": creds["project_name"],
         "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
+        **proxy,
     }
 
     _cred_to_o7k_env = {
@@ -400,7 +473,7 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
 
     with _ca_cert_temp(endpoint_tls_ca) as ca_file:
         try:
-            with urlopen(endpoint, cafile=ca_file) as fp:
+            with proxied_urlopen(endpoint, cafile=ca_file) as fp:
                 info = json.loads(fp.read(600).decode("utf8"))
                 version = str(info["version"]["id"]).split(".")[0].lstrip("v")
         except (
