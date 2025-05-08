@@ -1,7 +1,4 @@
-loadbalancer_interface==1.2.1
+loadbalancer_interface
+str2bool
 pbr<6.1.1
-setuptools==80.3.1
-str2bool==1.1
-opentelemetry_api==1.32.0
-hatchling==1.27.0
-calver==2025.4.17
+setuptools==70.3.0
