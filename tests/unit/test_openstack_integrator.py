@@ -80,6 +80,26 @@ def test_determine_version_by_url(log_err):
 
 
 @pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://valid-url.com", True),
+        ("http://valid-url.com", True),
+        ("http://valid-url.com:8080", True),
+        ("http://1.2.3.4:8080", True),
+        ("http://[::1]:8080", True),
+        ("http://user:pass@valid-url.com:8080/v1/api", True),
+        ("http://valid-url.com:80808", False),
+        ("ftp://invalid-url.com", False),
+        ("invalid-url", False),
+        ("https://", False),
+        ("", False),
+    ],
+)
+def test_valid_url_cases(url, expected):
+    assert openstack._valid_url(url) == expected
+
+
+@pytest.mark.parametrize(
     "http_failure",
     [
         ValueError("foo"),
@@ -200,7 +220,7 @@ def test_default_subnet(_openstack):
 def test_manage_loadbalancer(mock_lb, mock_subnet):
     lb_method = "ROUND_ROBIN"
     lb_port = "6443"
-    openstack.config = {
+    openstack.hookenv.config.return_value = {
         "lb-subnet": "",
         "lb-floating-network": "fip-network",
         "lb-port": lb_port,
@@ -549,9 +569,9 @@ def test_is_base64():
 
 
 def test_series_upgrade():
-    assert charms.layer.status.blocked.call_count == 0
+    charms.layer.status.blocked.reset_mock()
     reactive.openstack.pre_series_upgrade()
-    assert charms.layer.status.blocked.call_count == 1
+    charms.layer.status.blocked.assert_called_with("Series upgrade in progress")
 
 
 def test_update_credentials(_normalize_creds, _save_creds, log_err):
