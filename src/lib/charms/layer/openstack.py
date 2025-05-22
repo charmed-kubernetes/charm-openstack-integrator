@@ -346,7 +346,7 @@ def _valid_url(url: str) -> bool:
 
 class ProxyApplication(Enum):
     OPENSTACK_CLIENT = "openstack-client"
-    SUBORDINATES = "subordinates"
+    INTEGRATIONS = "integrations"
 
     @classmethod
     def from_string(cls, source: str) -> set["ProxyApplication"]:
@@ -365,7 +365,7 @@ def current_proxy_settings() -> dict[ProxyApplication, dict[str, str]]:
 
     proxy_by, src = {
         ProxyApplication.OPENSTACK_CLIENT: {},
-        ProxyApplication.SUBORDINATES: {},
+        ProxyApplication.INTEGRATIONS: {},
     }, os.environ
     for app in proxied:
         settings = {

@@ -85,7 +85,7 @@ def pre_series_upgrade():
 @when_not("charm.openstack.proxy.set")
 def analyze_proxy():
     proxy, updated = layer.openstack.current_proxy_settings(), False
-    settings = proxy[layer.openstack.ProxiedApplication.SUBORDINATES]
+    settings = proxy[layer.openstack.ProxiedApplication.INTEGRATIONS]
     if not settings:
         return
 
@@ -94,7 +94,7 @@ def analyze_proxy():
         if request.proxy_config != settings:
             updated = True
     if updated:
-        layer.status.maintenance("Subordinate proxy settings changed")
+        layer.status.maintenance("Integrations proxy settings changed")
         set_flag("charm.openstack.proxy.changed")
 
     set_flag("charm.openstack.proxy.set")
@@ -148,7 +148,7 @@ def handle_requests():
         return
 
     proxy = layer.openstack.current_proxy_settings()
-    settings = proxy[layer.openstack.ProxiedApplication.SUBORDINATES]
+    settings = proxy[layer.openstack.ProxiedApplication.INTEGRATIONS]
 
     creds_changed = is_flag_set("charm.openstack.creds.changed")
     proxy_changed = is_flag_set("charm.openstack.proxy.changed")
