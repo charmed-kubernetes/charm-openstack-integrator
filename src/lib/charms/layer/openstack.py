@@ -7,12 +7,13 @@ import subprocess
 import tempfile
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
+from enum import Enum
 from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
-from typing import Mapping, Optional
+from typing import Generator, Optional
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
@@ -343,62 +344,85 @@ def _valid_url(url: str) -> bool:
         return False
 
 
-@lru_cache(maxsize=1)
-def current_proxy_settings() -> Mapping[str, str]:
-    config = hookenv.config()
-    source = config["proxy-source"].lower()
-    if source not in ("none", "model"):
-        status.blocked("Invalid proxy-source. Must be 'none' or 'model'.")
+class ProxyApplication(Enum):
+    OPENSTACK_CLIENT = "openstack-client"
+    SUBORDINATES = "subordinates"
 
-    settings = {}
-    if source == "model":
-        src = os.environ
+    @classmethod
+    def from_string(cls, source: str) -> set["ProxyApplication"]:
+        split = (m.strip() for m in source.lower().split(","))
+        return {cls(m) for m in split if m}
+
+
+@lru_cache(maxsize=1)
+def current_proxy_settings() -> dict[ProxyApplication, dict[str, str]]:
+    config = hookenv.config()
+    try:
+        proxied = ProxyApplication.from_string(config["proxy-applications"])
+    except ValueError as e:
+        status.blocked(f"Invalid proxy-applications: {e.args}")
+        proxied = set()
+
+    proxy_by, src = {
+        ProxyApplication.OPENSTACK_CLIENT: {},
+        ProxyApplication.SUBORDINATES: {},
+    }, os.environ
+    for app in proxied:
         settings = {
             "HTTP_PROXY": src.get("JUJU_CHARM_HTTP_PROXY"),
             "HTTPS_PROXY": src.get("JUJU_CHARM_HTTPS_PROXY"),
             "NO_PROXY": src.get("JUJU_CHARM_NO_PROXY"),
         }
-    # Potentially add support for charm-provided proxy settings
-    # elif source == "charm":
-    #     settings = {
-    #         "HTTP_PROXY": config.get("http-proxy"),
-    #         "HTTPS_PROXY": config.get("https-proxy"),
-    #         "NO_PROXY": config.get("no-proxy"),
-    #     }
+        if any(v is None for v in settings.values()):
+            status.blocked("Incomplete proxy settings.")
+            log("Incomplete proxy settings. {}", settings)
+            proxy_by[app] = {}
+            break
 
-    if any(v is None for v in settings.values()):
-        status.blocked("Incomplete proxy settings.")
-        log("Incomplete proxy settings. {}", settings)
-        return {}
+        for k, v in settings.items():
+            if k != "NO_PROXY" and v and not _valid_url(v):
+                status.blocked(f"Invalid Proxy URL '{v}'")
+                log("Invalid Proxy URL {}='{}'", k, v)
+                proxy_by[app] = {}
+                break
+        proxy_by[app] = settings
 
-    for k, v in settings.items():
-        if k != "NO_PROXY" and v and not _valid_url(v):
-            status.blocked(f"Invalid Proxy URL '{v}'")
-            log("Invalid Proxy URL {}='{}'", k, v)
-            return {}
-
-    return settings
+    return proxy_by
 
 
 @contextmanager
-def proxied_urlopen(*args, **kwargs):
-    settings = current_proxy_settings()
-    old_env = {key: os.environ.get(key) for key in settings}
+def openstack_proxied(
+    env: dict[str, str] | os._Environ,
+) -> Generator[dict[str, str], None, None]:
+    """
+    Context manager to set the proxy environment variables for the OpenStack
+    client. This is used to ensure that the OpenStack client can access the
+    OpenStack API through the proxy.
+
+    Arguments:
+        env: The environment variables to update to reach the OpenStack API.
+             This can be a dictionary or os._Environ object.
+
+    Yields:
+        A dictionary with the updated environment variables.
+    """
+    proxy = current_proxy_settings()
+    settings = proxy[ProxyApplication.OPENSTACK_CLIENT]
+    old_env = {key: env.get(key) for key in settings}
     try:
-        os.environ.update(settings)
-        with urlopen(*args, **kwargs) as response:
-            yield response
+        env.update(settings)
+        yield {**env}
     finally:
         # Restore old environment values (or delete if they were originally unset)
         for key, value in old_env.items():
             if value is None:
-                os.environ.pop(key, None)
+                env.pop(key, None)
             else:
-                os.environ[key] = value
+                env[key] = value
 
 
 def _run_with_creds(*args):
-    creds, proxy = _load_creds(), current_proxy_settings()
+    creds = _load_creds()
     env = {
         "PATH": os.pathsep.join(["/snap/bin", os.environ["PATH"]]),
         "OS_AUTH_URL": creds["auth_url"],
@@ -408,7 +432,6 @@ def _run_with_creds(*args):
         "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
         "OS_PROJECT_NAME": creds["project_name"],
         "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
-        **proxy,
     }
 
     _cred_to_o7k_env = {
@@ -431,7 +454,8 @@ def _run_with_creds(*args):
     if CA_CERT_FILE.exists():
         env["OS_CACERT"] = str(CA_CERT_FILE)
 
-    result = subprocess.run(args, env=env, check=True, stdout=subprocess.PIPE)
+    with openstack_proxied(env) as proxy_env:
+        result = subprocess.run(args, env=proxy_env, check=True, stdout=subprocess.PIPE)
     return result.stdout.decode("utf8")
 
 
@@ -473,9 +497,10 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
 
     with _ca_cert_temp(endpoint_tls_ca) as ca_file:
         try:
-            with proxied_urlopen(endpoint, cafile=ca_file) as fp:
-                info = json.loads(fp.read(600).decode("utf8"))
-                version = str(info["version"]["id"]).split(".")[0].lstrip("v")
+            with openstack_proxied(os.environ):
+                with urlopen(endpoint, cafile=ca_file) as fp:
+                    info = json.loads(fp.read(600).decode("utf8"))
+                    version = str(info["version"]["id"]).split(".")[0].lstrip("v")
         except (
             HTTPError,
             json.JSONDecodeError,
