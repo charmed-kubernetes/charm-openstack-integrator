@@ -147,8 +147,8 @@ def handle_requests():
         layer.status.blocked(f"Invalid value for config {manage_security_groups=}")
         return
 
-    if not (settings := layer.openstack.current_proxy_settings()):
-        return
+    proxy = layer.openstack.current_proxy_settings()
+    settings = proxy[layer.openstack.ProxiedApplication.SUBORDINATES]
 
     creds_changed = is_flag_set("charm.openstack.creds.changed")
     proxy_changed = is_flag_set("charm.openstack.proxy.changed")
