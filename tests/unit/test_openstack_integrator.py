@@ -17,6 +17,8 @@ import reactive.openstack
 openstack = charms.layer.openstack
 status = charms.layer.status
 
+subprocess: mock.Mock
+
 log_err = patch_fixture("charms.layer.openstack.log_err")
 _load_creds = patch_fixture("charms.layer.openstack._load_creds")
 detect_octavia = patch_fixture("charms.layer.openstack.detect_octavia")
@@ -80,6 +82,26 @@ def test_determine_version_by_url(log_err):
 
 
 @pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://valid-url.com", True),
+        ("http://valid-url.com", True),
+        ("http://valid-url.com:8080", True),
+        ("http://1.2.3.4:8080", True),
+        ("http://[::1]:8080", True),
+        ("http://user:pass@valid-url.com:8080/v1/api", True),
+        ("http://valid-url.com:80808", False),
+        ("ftp://invalid-url.com", False),
+        ("invalid-url", False),
+        ("https://", False),
+        ("", False),
+    ],
+)
+def test_valid_url_cases(url, expected):
+    assert openstack._valid_url(url) == expected
+
+
+@pytest.mark.parametrize(
     "http_failure",
     [
         ValueError("foo"),
@@ -92,6 +114,7 @@ def test_determine_version_by_url(log_err):
 )
 def test_determine_version_fetch_with_failure(log_err, http_failure):
     # Determine through http fetch
+    openstack.current_proxy_settings.cache_clear()
     log_err.reset_mock()
     urlopen.side_effect = None
     read = urlopen.return_value.__enter__().read
@@ -104,6 +127,7 @@ def test_determine_version_fetch_with_failure(log_err, http_failure):
     )
 
     args = {}, "https://endpoint/", None
+    openstack.hookenv.config.return_value = {"proxy-applications": ""}
     assert openstack._determine_version(*args) == "3"
     log_err.assert_not_called()
 
@@ -132,11 +156,20 @@ def test_run_with_creds(_load_creds):
         "endpoint_tls_ca": _b64("endpoint_tls_ca"),
         "version": "3",
     }
-    with mock.patch.dict(os.environ, {"PATH": "path"}):
+    proxy_settings = {
+        "HTTP_PROXY": "http://proxy.example.com:8080",
+        "HTTPS_PROXY": "https://proxy.example.com:8080",
+        "NO_PROXY": "",
+    }
+    with mock.patch.object(
+        openstack,
+        "current_proxy_settings",
+        return_value={openstack.ProxyApplication.OPENSTACK_CLIENT: proxy_settings},
+    ), mock.patch.dict(os.environ, {"PATH": "path"}):
         openstack._run_with_creds("my", "args")
     assert openstack.CA_CERT_FILE.exists()
     assert openstack.CA_CERT_FILE.read_text() == "endpoint_tls_ca\n"
-    assert subprocess.run.call_args == mock.call(
+    subprocess.run.assert_called_with(
         ("my", "args"),
         env={
             "PATH": "/snap/bin:path",
@@ -150,6 +183,9 @@ def test_run_with_creds(_load_creds):
             "OS_PROJECT_DOMAIN_NAME": "project_domain_name",
             "OS_IDENTITY_API_VERSION": "3",
             "OS_CACERT": str(openstack.CA_CERT_FILE),
+            "HTTP_PROXY": "http://proxy.example.com:8080",
+            "HTTPS_PROXY": "https://proxy.example.com:8080",
+            "NO_PROXY": "",
         },
         check=True,
         stdout=mock.ANY,
@@ -200,7 +236,7 @@ def test_default_subnet(_openstack):
 def test_manage_loadbalancer(mock_lb, mock_subnet):
     lb_method = "ROUND_ROBIN"
     lb_port = "6443"
-    openstack.config = {
+    openstack.hookenv.config.return_value = {
         "lb-subnet": "",
         "lb-floating-network": "fip-network",
         "lb-port": lb_port,
@@ -549,9 +585,9 @@ def test_is_base64():
 
 
 def test_series_upgrade():
-    assert charms.layer.status.blocked.call_count == 0
+    charms.layer.status.blocked.reset_mock()
     reactive.openstack.pre_series_upgrade()
-    assert charms.layer.status.blocked.call_count == 1
+    charms.layer.status.blocked.assert_called_with("Series upgrade in progress")
 
 
 def test_update_credentials(_normalize_creds, _save_creds, log_err):

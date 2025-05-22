@@ -168,3 +168,15 @@ options:
       (no floating IP) by default.
     type: boolean
     default: false
+  proxy-applications:
+    description: |
+      A comma separated list of applications managed by this charm to be proxied
+      using juju's model-config juju-*-proxy settings.
+      (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
+
+      Choices are "", "openstack-client", or "integrations" or any combination
+
+      * "openstack-client", the local openstack-client application will be proxied
+      * "integrations", the proxy information will be passed to requirers of the openstack-integrators interface
+    type: string
+    default: ""
