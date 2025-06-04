@@ -85,7 +85,7 @@ def pre_series_upgrade():
 @when_not("charm.openstack.proxy.set")
 def analyze_proxy():
     proxy, updated = layer.openstack.current_proxy_settings(), False
-    settings = proxy[layer.openstack.ProxiedApplication.INTEGRATIONS]
+    settings = proxy[layer.openstack.ProxiedApplication.CLIENTS]
     if not settings:
         return
 
@@ -94,7 +94,7 @@ def analyze_proxy():
         if request.proxy_config != settings:
             updated = True
     if updated:
-        layer.status.maintenance("Integrations proxy settings changed")
+        layer.status.maintenance("Clients proxy settings changed")
         set_flag("charm.openstack.proxy.changed")
 
     set_flag("charm.openstack.proxy.set")

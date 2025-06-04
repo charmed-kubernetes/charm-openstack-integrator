@@ -174,9 +174,9 @@ options:
       using juju's model-config juju-*-proxy settings.
       (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
 
-      Choices are "", "openstack-client", or "integrations" or any combination
+      Choices are "", "openstack-client", or "clients" or any combination
 
       * "openstack-client", the local openstack-client application will be proxied
-      * "integrations", the proxy information will be passed to requirers of the openstack-integrators interface
+      * "clients", the proxy information will be passed to requirers on the clients relation
     type: string
     default: ""

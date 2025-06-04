@@ -8,7 +8,7 @@ from reactive.openstack import analyze_proxy, lb_manage_security_groups
 def test_analyze_proxy_currently_unset(layer, endpoint_from_name):
     # Test with no proxy settings
     layer.openstack.current_proxy_settings.return_value = {
-        layer.openstack.ProxiedApplication.INTEGRATIONS: {}
+        layer.openstack.ProxiedApplication.CLIENTS: {}
     }
     analyze_proxy()
     endpoint_from_name.assert_not_called()
@@ -29,7 +29,7 @@ def test_analyze_proxy_matched_settings(set_flag, layer, endpoint_from_name):
     client_endpoint = endpoint_from_name.return_value
     client_endpoint.all_requests = [client_request]
     layer.openstack.current_proxy_settings.return_value = {
-        layer.openstack.ProxiedApplication.INTEGRATIONS: settings
+        layer.openstack.ProxiedApplication.CLIENTS: settings
     }
     analyze_proxy()
     endpoint_from_name.assert_called_once_with("clients")
@@ -52,12 +52,10 @@ def test_analyze_proxy_unmatched_settings(set_flag, layer, endpoint_from_name):
     client_endpoint = endpoint_from_name.return_value
     client_endpoint.all_requests = [client_request]
     layer.openstack.current_proxy_settings.return_value = {
-        layer.openstack.ProxiedApplication.INTEGRATIONS: settings
+        layer.openstack.ProxiedApplication.CLIENTS: settings
     }
     analyze_proxy()
-    layer.status.maintenance.assert_called_once_with(
-        "Integrations proxy settings changed"
-    )
+    layer.status.maintenance.assert_called_once_with("Clients proxy settings changed")
     endpoint_from_name.assert_called_once_with("clients")
     set_flag.assert_any_call("charm.openstack.proxy.changed")
     set_flag.assert_any_call("charm.openstack.proxy.set")
