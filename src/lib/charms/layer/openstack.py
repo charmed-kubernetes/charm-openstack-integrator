@@ -7,7 +7,6 @@ import subprocess
 import tempfile
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
-from enum import Enum
 from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
@@ -329,65 +328,59 @@ def _load_creds():
     return kv().get("charm.openstack.full-creds")
 
 
-def _valid_url(url: str) -> bool:
-    parsed = urlparse(url)
+class ProxyUrlError(Exception):
+    """Custom exception for invalid proxy URLs."""
+
+    pass
+
+
+def _validate_proxy_url(url: Optional[str]) -> None:
+    """Check if the given URL is valid for use as a proxy.
+
+    Args:
+        url (str): The URL to validate.
+
+    Raises:
+        ProxyUrlError: If the URL is malformed or does not
+                       conform to expected proxy URL formats.
+    """
     try:
-        return all(
-            [
-                parsed.scheme in ("http", "https"),
-                parsed.hostname or parsed.netloc,
-                isinstance(parsed.port, Optional[int]),
-            ]
-        )
-    except ValueError:
+        parsed = urlparse(url)
+        parsed.port
+    except ValueError as e:
         # urlparse can raise ValueError if the URL is malformed
-        return False
-
-
-class ProxyApplication(Enum):
-    OPENSTACK_CLIENT = "openstack-client"
-    CLIENTS = "clients"
-
-    @classmethod
-    def from_string(cls, source: str) -> set["ProxyApplication"]:
-        split = (m.strip() for m in source.lower().split(","))
-        return {cls(m) for m in split if m}
+        raise ProxyUrlError(f"Invalid proxy URL: {url=}. {e.args}.") from e
+    if parsed.scheme not in ("http", "https"):
+        raise ProxyUrlError(
+            f"Invalid proxy URL: {url=}. Only 'http' and 'https' schemes are supported."
+        )
+    if not parsed.hostname and not parsed.netloc:
+        raise ProxyUrlError(
+            f"Invalid proxy URL: {url=}. It must include a valid hostname or netloc."
+        )
 
 
 @lru_cache(maxsize=1)
-def current_proxy_settings() -> dict[ProxyApplication, dict[str, str]]:
+def current_proxy_settings() -> dict[str, str]:
     config = hookenv.config()
-    try:
-        proxied = ProxyApplication.from_string(config["proxy-applications"])
-    except ValueError as e:
-        status.blocked(f"Invalid proxy-applications: {e.args}")
-        proxied = set()
-
-    proxy_by, src = {
-        ProxyApplication.OPENSTACK_CLIENT: {},
-        ProxyApplication.CLIENTS: {},
-    }, os.environ
-    for app in proxied:
-        settings = {
-            "HTTP_PROXY": src.get("JUJU_CHARM_HTTP_PROXY"),
-            "HTTPS_PROXY": src.get("JUJU_CHARM_HTTPS_PROXY"),
-            "NO_PROXY": src.get("JUJU_CHARM_NO_PROXY"),
-        }
-        if any(v is None for v in settings.values()):
-            status.blocked("Incomplete proxy settings.")
-            log("Incomplete proxy settings. {}", settings)
-            proxy_by[app] = {}
-            break
-
-        for k, v in settings.items():
-            if k != "NO_PROXY" and v and not _valid_url(v):
-                status.blocked(f"Invalid Proxy URL '{v}'")
-                log("Invalid Proxy URL {}='{}'", k, v)
-                proxy_by[app] = {}
-                break
-        proxy_by[app] = settings
-
-    return proxy_by
+    proxied = bool(config.get("model-proxy-enable"))
+    if not proxied:
+        log("Proxy is not enabled, returning empty settings.")
+        return {}
+    settings = {
+        "HTTP_PROXY": os.getenv("JUJU_CHARM_HTTP_PROXY") or "",
+        "HTTPS_PROXY": os.getenv("JUJU_CHARM_HTTPS_PROXY") or "",
+    }
+    for v in settings.values():
+        try:
+            _validate_proxy_url(v)
+        except ProxyUrlError as e:
+            log_err(str(e))
+            status.blocked(str(e))
+            return {}
+    settings["NO_PROXY"] = os.getenv("JUJU_CHARM_NO_PROXY") or ""
+    settings.update({k.lower(): v for k, v in settings.items()})
+    return settings
 
 
 @contextmanager
@@ -406,8 +399,7 @@ def openstack_proxied(
     Yields:
         A dictionary with the updated environment variables.
     """
-    proxy = current_proxy_settings()
-    settings = proxy[ProxyApplication.OPENSTACK_CLIENT]
+    settings = current_proxy_settings()
     old_env = {key: env.get(key) for key in settings}
     try:
         env.update(settings)

@@ -39,6 +39,8 @@ get_port_sec_enabled = patch_fixture(
 _normalize_creds = patch_fixture("charms.layer.openstack._normalize_creds")
 _save_creds = patch_fixture("charms.layer.openstack._save_creds")
 _determine_version = patch_fixture("charms.layer.openstack._determine_version")
+PROXY_EXAMPLE_COM = "https://proxy.example.com:8080"
+NO_PROXY = "127.0.0.1,localhost.::1,example.com"
 
 
 class MockCalledProcessError(Exception):
@@ -56,6 +58,30 @@ def clean():
         openstack.CA_CERT_FILE = cert_file
         openstack.config = {}
         yield
+
+
+@pytest.fixture(autouse=True)
+def mock_getenv():
+    """Mock environment variables."""
+
+    def wrapped(name, default=None):
+        """Return a mock value for environment variables."""
+        if value := getenv.override.get(name):
+            return value
+        if name.upper().endswith("HTTPS_PROXY"):
+            return PROXY_EXAMPLE_COM
+        elif name.upper().endswith("HTTP_PROXY"):
+            return PROXY_EXAMPLE_COM
+        elif name.upper().endswith("NO_PROXY"):
+            return NO_PROXY
+        if value := os.environ.get(name):
+            return value
+        return default
+
+    with mock.patch("os.getenv") as getenv:
+        getenv.override = {}
+        getenv.side_effect = wrapped
+        yield getenv
 
 
 @pytest.fixture
@@ -82,23 +108,56 @@ def test_determine_version_by_url(log_err):
 
 
 @pytest.mark.parametrize(
-    "url, expected",
+    "url",
     [
-        ("https://valid-url.com", True),
-        ("http://valid-url.com", True),
-        ("http://valid-url.com:8080", True),
-        ("http://1.2.3.4:8080", True),
-        ("http://[::1]:8080", True),
-        ("http://user:pass@valid-url.com:8080/v1/api", True),
-        ("http://valid-url.com:80808", False),
-        ("ftp://invalid-url.com", False),
-        ("invalid-url", False),
-        ("https://", False),
-        ("", False),
+        "https://valid-url.com",
+        "http://valid-url.com",
+        "http://valid-url.com:8080",
+        "http://1.2.3.4:8080",
+        "http://[::1]:8080",
+        "http://user:pass@valid-url.com:8080/v1/api",
     ],
 )
-def test_valid_url_cases(url, expected):
-    assert openstack._valid_url(url) == expected
+def test_validate_proxy_url_valid(url):
+    # Test valid URLs
+    openstack._validate_proxy_url(url)
+
+
+@pytest.mark.parametrize(
+    "url,detail",
+    [
+        ("http://", "It must include a valid hostname or netloc."),
+        ("ftp://example.com", "Only 'http' and 'https' schemes are supported"),
+        ("https://example.com:80808", "Port out of range 0-65535"),
+    ],
+)
+def test_validate_proxy_url(url, detail):
+    with pytest.raises(openstack.ProxyUrlError) as ie:
+        openstack._validate_proxy_url(url)
+    ie.match(detail)
+
+
+def test_current_proxy_settings_valid():
+    # Test current_proxy_settings
+    openstack.hookenv.config.return_value = {"model-proxy-enable": True}
+    openstack.current_proxy_settings.cache_clear()
+    settings = openstack.current_proxy_settings()
+    assert isinstance(settings, dict)
+    assert settings["HTTP_PROXY"] == PROXY_EXAMPLE_COM
+    assert settings["HTTPS_PROXY"] == PROXY_EXAMPLE_COM
+    assert settings["NO_PROXY"] == NO_PROXY
+    assert settings["http_proxy"] == PROXY_EXAMPLE_COM
+    assert settings["https_proxy"] == PROXY_EXAMPLE_COM
+    assert settings["no_proxy"] == NO_PROXY
+
+
+def test_current_proxy_settings_invalid(mock_getenv):
+    # Test current_proxy_settings
+    mock_getenv.override = {"JUJU_CHARM_HTTPS_PROXY": "invalid-url"}
+    openstack.hookenv.config.return_value = {"model-proxy-enable": True}
+    openstack.current_proxy_settings.cache_clear()
+    settings = openstack.current_proxy_settings()
+    assert settings == {}
 
 
 @pytest.mark.parametrize(
@@ -127,7 +186,7 @@ def test_determine_version_fetch_with_failure(log_err, http_failure):
     )
 
     args = {}, "https://endpoint/", None
-    openstack.hookenv.config.return_value = {"proxy-applications": ""}
+    openstack.hookenv.config.return_value = {"model-proxy-enable": False}
     assert openstack._determine_version(*args) == "3"
     log_err.assert_not_called()
 
@@ -164,7 +223,7 @@ def test_run_with_creds(_load_creds):
     with mock.patch.object(
         openstack,
         "current_proxy_settings",
-        return_value={openstack.ProxyApplication.OPENSTACK_CLIENT: proxy_settings},
+        return_value=proxy_settings,
     ), mock.patch.dict(os.environ, {"PATH": "path"}):
         openstack._run_with_creds("my", "args")
     assert openstack.CA_CERT_FILE.exists()
