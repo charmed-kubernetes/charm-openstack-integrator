@@ -12,13 +12,12 @@ from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
-from typing import Generator, Optional
+from typing import Generator
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
 
 import jmodelproxylib
-import jmodelproxylib.errors
 import yaml
 
 from charmhelpers.core import hookenv
@@ -36,6 +35,7 @@ os.environ["HOME"] = "/root"
 CA_CERT_FILE = Path("/var/snap/openstackclients/common/ca.crt")
 MODEL_UUID = os.environ["JUJU_MODEL_UUID"]
 MODEL_SHORT_ID = MODEL_UUID.split("-")[-1]
+Env = dict[str, str] | os._Environ
 
 
 def log(msg, *args):
@@ -328,41 +328,6 @@ def get_creds_and_reformat():
 
 def _load_creds():
     return kv().get("charm.openstack.full-creds")
-
-
-class ProxyUrlError(Exception):
-    """Custom exception for invalid proxy URLs."""
-
-    pass
-
-
-def _validate_proxy_url(url: Optional[str]) -> None:
-    """Check if the given URL is valid for use as a proxy.
-
-    Args:
-        url (str): The URL to validate.
-
-    Raises:
-        ProxyUrlError: If the URL is malformed or does not
-                       conform to expected proxy URL formats.
-    """
-    try:
-        parsed = urlparse(url)
-        parsed.port
-    except ValueError as e:
-        # urlparse can raise ValueError if the URL is malformed
-        raise ProxyUrlError(f"Invalid proxy URL: {url=}. {e.args}.") from e
-    if parsed.scheme not in ("http", "https"):
-        raise ProxyUrlError(
-            f"Invalid proxy URL: {url=}. Only 'http' and 'https' schemes are supported."
-        )
-    if not parsed.hostname and not parsed.netloc:
-        raise ProxyUrlError(
-            f"Invalid proxy URL: {url=}. It must include a valid hostname or netloc."
-        )
-
-
-Env = dict[str, str] | os._Environ
 
 
 @lru_cache(maxsize=1)

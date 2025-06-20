@@ -107,36 +107,6 @@ def test_determine_version_by_url(log_err):
     log_err.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "url",
-    [
-        "https://valid-url.com",
-        "http://valid-url.com",
-        "http://valid-url.com:8080",
-        "http://1.2.3.4:8080",
-        "http://[::1]:8080",
-        "http://user:pass@valid-url.com:8080/v1/api",
-    ],
-)
-def test_validate_proxy_url_valid(url):
-    # Test valid URLs
-    openstack._validate_proxy_url(url)
-
-
-@pytest.mark.parametrize(
-    "url,detail",
-    [
-        ("http://", "It must include a valid hostname or netloc."),
-        ("ftp://example.com", "Only 'http' and 'https' schemes are supported"),
-        ("https://example.com:80808", "Port out of range 0-65535"),
-    ],
-)
-def test_validate_proxy_url(url, detail):
-    with pytest.raises(openstack.ProxyUrlError) as ie:
-        openstack._validate_proxy_url(url)
-    ie.match(detail)
-
-
 def test_cached_openstack_proxied_valid():
     # Test cached_openstack_proxied
     openstack.hookenv.config.return_value = {"juju-model-proxy-enable": True}
