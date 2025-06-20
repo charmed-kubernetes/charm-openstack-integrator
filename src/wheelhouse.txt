@@ -3,3 +3,4 @@ str2bool==1.1
 pbr==6.1.0
 setuptools==70.3.0
 ops==2.20.0
+jmodelproxylib @ git+https://github.com/addyess/jmodelproxylib@main
