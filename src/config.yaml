@@ -168,7 +168,7 @@ options:
       (no floating IP) by default.
     type: boolean
     default: false
-  model-proxy-enable:
+  juju-model-proxy-enable:
     type: boolean
     description: |
       Whether the applications managed by this charm should be

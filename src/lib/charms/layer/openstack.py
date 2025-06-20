@@ -17,6 +17,8 @@ from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
 
+import jmodelproxylib
+import jmodelproxylib.errors
 import yaml
 
 from charmhelpers.core import hookenv
@@ -360,33 +362,17 @@ def _validate_proxy_url(url: Optional[str]) -> None:
         )
 
 
+Env = dict[str, str] | os._Environ
+
+
 @lru_cache(maxsize=1)
-def current_proxy_settings() -> dict[str, str]:
-    config = hookenv.config()
-    proxied = bool(config.get("model-proxy-enable"))
-    if not proxied:
-        log("Proxy is not enabled, returning empty settings.")
-        return {}
-    settings = {
-        "HTTP_PROXY": os.getenv("JUJU_CHARM_HTTP_PROXY") or "",
-        "HTTPS_PROXY": os.getenv("JUJU_CHARM_HTTPS_PROXY") or "",
-    }
-    for v in settings.values():
-        try:
-            _validate_proxy_url(v)
-        except ProxyUrlError as e:
-            log_err(str(e))
-            status.blocked(str(e))
-            return {}
-    settings["NO_PROXY"] = os.getenv("JUJU_CHARM_NO_PROXY") or ""
-    settings.update({k.lower(): v for k, v in settings.items()})
-    return settings
+def cached_openstack_proxied() -> dict[str, str]:
+    with openstack_proxied({}) as proxied:
+        return {**proxied}
 
 
 @contextmanager
-def openstack_proxied(
-    env: dict[str, str] | os._Environ,
-) -> Generator[dict[str, str], None, None]:
+def openstack_proxied(env: Env) -> Generator[Env, None, None]:
     """
     Context manager to set the proxy environment variables for the OpenStack
     client. This is used to ensure that the OpenStack client can access the
@@ -399,18 +385,13 @@ def openstack_proxied(
     Yields:
         A dictionary with the updated environment variables.
     """
-    settings = current_proxy_settings()
-    old_env = {key: env.get(key) for key in settings}
-    try:
-        env.update(settings)
+    config = hookenv.config()
+    enabled = bool(config.get("juju-model-proxy-enable"))
+    with jmodelproxylib.environ(env, enabled=enabled) as proxy_env:
+        if err := proxy_env.error:
+            log_err("Error while getting proxy settings: {}", err)
+            status.blocked(err)
         yield {**env}
-    finally:
-        # Restore old environment values (or delete if they were originally unset)
-        for key, value in old_env.items():
-            if value is None:
-                env.pop(key, None)
-            else:
-                env[key] = value
 
 
 def _run_with_creds(*args):

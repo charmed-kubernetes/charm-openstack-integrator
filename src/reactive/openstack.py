@@ -56,7 +56,7 @@ def update_creds():
     "config.changed.http-proxy",
     "config.changed.https-proxy",
     "config.changed.no-proxy",
-    "config.changed.model-proxy-enable",
+    "config.changed.juju-model-proxy-enable",
 )
 def update_proxy():
     clear_flag("charm.openstack.proxy.set")
@@ -84,7 +84,7 @@ def pre_series_upgrade():
 
 @when_not("charm.openstack.proxy.set")
 def analyze_proxy():
-    settings, updated = layer.openstack.current_proxy_settings(), False
+    settings, updated = layer.openstack.cached_openstack_proxied(), False
 
     clients = endpoint_from_name("clients")
     for request in clients.all_requests:
@@ -144,7 +144,7 @@ def handle_requests():
         layer.status.blocked(f"Invalid value for config {manage_security_groups=}")
         return
 
-    settings = layer.openstack.current_proxy_settings()
+    settings = layer.openstack.cached_openstack_proxied()
 
     creds_changed = is_flag_set("charm.openstack.creds.changed")
     proxy_changed = is_flag_set("charm.openstack.proxy.changed")
