@@ -137,7 +137,6 @@ def lb_manage_security_groups(config: Mapping[str, Any]) -> Optional[bool]:
 def handle_requests():
     layer.status.maintenance("Granting integration requests")
     clients = endpoint_from_name("clients")
-    config_change = is_flag_set("config.changed")
     config = hookenv.config()
     has_octavia = layer.openstack.detect_octavia()
     if (manage_security_groups := lb_manage_security_groups(config)) is None:
@@ -145,7 +144,7 @@ def handle_requests():
         return
 
     settings = layer.openstack.cached_openstack_proxied()
-
+    config_change = is_flag_set("config.changed")
     creds_changed = is_flag_set("charm.openstack.creds.changed")
     proxy_changed = is_flag_set("charm.openstack.proxy.changed")
     refresh_requests = config_change or creds_changed or proxy_changed
@@ -305,13 +304,26 @@ def manage_loadbalancers_via_loadbalancer():
         layer.status.blocked(str(e))
 
 
-@when_all("charm.openstack.creds.set", "endpoint.lb-consumers.requests_changed")
+@when_all("charm.openstack.creds.set")
+@when_any(
+    "endpoint.lb-consumers.requests_changed",
+    "config.changed",
+    "charm.openstack.creds.changed",
+    "charm.openstack.proxy.changed",
+)
 @when_not("upgrade.series.in-progress")
 def manage_loadbalancers_via_lb_consumers():
     layer.status.maintenance("Managing load balancers")
     lb_consumers = allow_lb_consumers_to_read_requests()
     errors = []
-    for request in lb_consumers.new_requests:
+    config_change = is_flag_set("config.changed")
+    creds_changed = is_flag_set("charm.openstack.creds.changed")
+    proxy_changed = is_flag_set("charm.openstack.proxy.changed")
+    refresh_requests = config_change or creds_changed or proxy_changed
+    requests = (
+        lb_consumers.all_requests if refresh_requests else lb_consumers.new_requests
+    )
+    for request in requests:
         response = _validate_loadbalancer_request(request)
         if response.error_fields:
             lb_consumers.send_response(request)
