@@ -336,6 +336,8 @@ def manage_loadbalancers_via_lb_consumers():
                 request.name, members, lb_port, _lb_algo(request), "lb-consumers"
             )
             response.address = lb.fip or lb.address
+            response.error = ""
+            response.error_message = ""
         except layer.openstack.OpenStackError as e:
             response.error = response.error_types.provider_error
             response.error_message = str(e)
