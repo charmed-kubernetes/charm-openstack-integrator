@@ -27,6 +27,7 @@ from charms.layer import status
 
 
 CACHED_LB_PREFIX = "created_lbs"
+ENDPOINT_TIMEOUT = 30.0 # seconds
 
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.
@@ -393,7 +394,13 @@ def _run_with_creds(*args):
         env["OS_CACERT"] = str(CA_CERT_FILE)
 
     with openstack_proxied(env) as proxy_env:
-        result = subprocess.run(args, env=proxy_env, check=True, stdout=subprocess.PIPE)
+        result = subprocess.run(
+            args,
+            env=proxy_env,
+            check=True,
+            stdout=subprocess.PIPE,
+            timeout=ENDPOINT_TIMEOUT,
+        )
     return result.stdout.decode("utf8")
 
 
@@ -436,7 +443,7 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
     with _ca_cert_temp(endpoint_tls_ca) as ca_file:
         try:
             with openstack_proxied(os.environ):
-                with urlopen(endpoint, cafile=ca_file) as fp:
+                with urlopen(endpoint, cafile=ca_file, timeout=ENDPOINT_TIMEOUT) as fp:
                     info = json.loads(fp.read(600).decode("utf8"))
                     version = str(info["version"]["id"]).split(".")[0].lstrip("v")
         except (
@@ -445,6 +452,7 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
             UnicodeDecodeError,
             KeyError,
             ValueError,
+            TimeoutError,
         ) as e:
             log_err("Failed to determine API version: {}", e)
     return version
