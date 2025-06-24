@@ -27,7 +27,7 @@ from charms.layer import status
 
 
 CACHED_LB_PREFIX = "created_lbs"
-ENDPOINT_TIMEOUT = 30.0 # seconds
+ENDPOINT_TIMEOUT = 30.0  # seconds
 
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.

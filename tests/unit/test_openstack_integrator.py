@@ -221,6 +221,7 @@ def test_run_with_creds(_load_creds):
         },
         check=True,
         stdout=mock.ANY,
+        timeout=30.0,
     )
 
     _load_creds.return_value["endpoint_tls_ca"] = _b64("foo")
