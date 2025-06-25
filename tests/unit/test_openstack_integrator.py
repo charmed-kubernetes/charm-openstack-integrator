@@ -109,7 +109,7 @@ def test_determine_version_by_url(log_err):
 
 def test_cached_openstack_proxied_valid():
     # Test cached_openstack_proxied
-    openstack.hookenv.config.return_value = {"juju-model-proxy-enable": True}
+    openstack.hookenv.config.return_value = {"web-proxy-enable": True}
     openstack.cached_openstack_proxied.cache_clear()
     settings = openstack.cached_openstack_proxied()
     assert isinstance(settings, dict)
@@ -124,7 +124,7 @@ def test_cached_openstack_proxied_valid():
 def test_cached_openstack_proxied_invalid(mock_getenv):
     # Test cached_openstack_proxied
     mock_getenv.override = {"JUJU_CHARM_HTTPS_PROXY": "invalid-url"}
-    openstack.hookenv.config.return_value = {"juju-model-proxy-enable": True}
+    openstack.hookenv.config.return_value = {"web-proxy-enable": True}
     openstack.cached_openstack_proxied.cache_clear()
     settings = openstack.cached_openstack_proxied()
     assert settings == {}
@@ -156,7 +156,7 @@ def test_determine_version_fetch_with_failure(log_err, http_failure):
     )
 
     args = {}, "https://endpoint/", None
-    openstack.hookenv.config.return_value = {"juju-model-proxy-enable": False}
+    openstack.hookenv.config.return_value = {"web-proxy-enable": False}
     assert openstack._determine_version(*args) == "3"
     log_err.assert_not_called()
 
@@ -173,7 +173,7 @@ def _b64(s):
 
 
 def test_run_with_creds(_load_creds):
-    openstack.hookenv.config.return_value = {"juju-model-proxy-enable": True}
+    openstack.hookenv.config.return_value = {"web-proxy-enable": True}
     _load_creds.return_value = {
         "auth_url": "auth_url",
         "region": "region",
@@ -192,7 +192,7 @@ def test_run_with_creds(_load_creds):
         "JUJU_CHARM_NO_PROXY": "",
     }
     with mock.patch(
-        "jmodelproxylib.model.raw",
+        "charms.proxylib.model.raw",
         return_value=proxy_settings,
     ), mock.patch.dict(os.environ, {"PATH": "path"}):
         openstack._run_with_creds("my", "args")

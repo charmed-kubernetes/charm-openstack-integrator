@@ -17,7 +17,7 @@ from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
 
-import jmodelproxylib
+import charms.proxylib
 import yaml
 
 from charmhelpers.core import hookenv
@@ -352,8 +352,8 @@ def openstack_proxied(env: Env) -> Generator[Env, None, None]:
         A dictionary with the updated environment variables.
     """
     config = hookenv.config()
-    enabled = bool(config.get("juju-model-proxy-enable"))
-    with jmodelproxylib.environ(env, enabled=enabled) as proxy_env:
+    enabled = bool(config.get("web-proxy-enable"))
+    with charms.proxylib.environ(env, enabled=enabled) as proxy_env:
         if err := proxy_env.error:
             log_err("Error while getting proxy settings: {}", err)
             status.blocked(err)

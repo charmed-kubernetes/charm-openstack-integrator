@@ -56,7 +56,7 @@ def update_creds():
     "config.changed.http-proxy",
     "config.changed.https-proxy",
     "config.changed.no-proxy",
-    "config.changed.juju-model-proxy-enable",
+    "config.changed.web-proxy-enable",
 )
 def update_proxy():
     clear_flag("charm.openstack.proxy.set")
