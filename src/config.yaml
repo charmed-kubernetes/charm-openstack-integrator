@@ -168,3 +168,10 @@ options:
       (no floating IP) by default.
     type: boolean
     default: false
+  web-proxy-enable:
+    type: boolean
+    description: |
+      Whether the applications managed by this charm should be
+      proxied using juju's model-config juju-*-proxy settings.
+      (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
+    default: false

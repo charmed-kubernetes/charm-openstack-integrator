@@ -52,22 +52,49 @@ def update_creds():
     clear_flag("charm.openstack.creds.set")
 
 
+@when_any(
+    "config.changed.http-proxy",
+    "config.changed.https-proxy",
+    "config.changed.no-proxy",
+    "config.changed.web-proxy-enable",
+)
+def update_proxy():
+    clear_flag("charm.openstack.proxy.set")
+
+
 @hook("upgrade-charm")
 def upgrade_charm():
     # when the charm is upgraded, recheck the creds in case anything
     # has changed or we want to handle any of the fields differently
     clear_flag("charm.openstack.creds.set")
+    clear_flag("charm.openstack.proxy.set")
 
 
 @hook("update-status")
 def update_status():
     # need to recheck creds in case the credentials from Juju have changed
     clear_flag("charm.openstack.creds.set")
+    clear_flag("charm.openstack.proxy.set")
 
 
 @hook("pre-series-upgrade")
 def pre_series_upgrade():
     layer.status.blocked("Series upgrade in progress")
+
+
+@when_not("charm.openstack.proxy.set")
+def analyze_proxy():
+    settings, updated = layer.openstack.cached_openstack_proxied(), False
+
+    clients = endpoint_from_name("clients")
+    for request in clients.all_requests:
+        if request.proxy_config != settings:
+            updated = True
+    if updated:
+        layer.status.maintenance("Clients proxy settings changed")
+        set_flag("charm.openstack.proxy.changed")
+
+    set_flag("charm.openstack.proxy.set")
 
 
 @when_not("charm.openstack.creds.set")
@@ -104,6 +131,7 @@ def lb_manage_security_groups(config: Mapping[str, Any]) -> Optional[bool]:
     "endpoint.clients.requests-pending",
     "config.changed",
     "charm.openstack.creds.changed",
+    "charm.openstack.proxy.changed",
 )
 @when_not("upgrade.series.in-progress")
 def handle_requests():
@@ -115,13 +143,16 @@ def handle_requests():
         layer.status.blocked(f"Invalid value for config {manage_security_groups=}")
         return
 
+    settings = layer.openstack.cached_openstack_proxied()
     config_change = is_flag_set("config.changed")
     creds_changed = is_flag_set("charm.openstack.creds.changed")
-    refresh_requests = config_change or creds_changed
+    proxy_changed = is_flag_set("charm.openstack.proxy.changed")
+    refresh_requests = config_change or creds_changed or proxy_changed
     requests = clients.all_requests if refresh_requests else clients.new_requests
     for request in requests:
         layer.status.maintenance("Granting request for {}".format(request.unit_name))
         creds = layer.openstack.get_credentials()
+        request.set_proxy_config(settings)
         request.set_credentials(**creds)
         request.set_lbaas_config(
             config["subnet-id"],
@@ -147,6 +178,7 @@ def handle_requests():
         layer.openstack.log("Finished request for {}", request.unit_name)
     clients.mark_completed()
     clear_flag("charm.openstack.creds.changed")
+    clear_flag("charm.openstack.proxy.changed")
 
 
 @when_all("charm.openstack.creds.set", "credentials.connected")
@@ -277,6 +309,7 @@ def manage_loadbalancers_via_loadbalancer():
     "endpoint.lb-consumers.requests_changed",
     "config.changed",
     "charm.openstack.creds.changed",
+    "charm.openstack.proxy.changed",
 )
 @when_not("upgrade.series.in-progress")
 def manage_loadbalancers_via_lb_consumers():
@@ -285,7 +318,8 @@ def manage_loadbalancers_via_lb_consumers():
     errors = []
     config_change = is_flag_set("config.changed")
     creds_changed = is_flag_set("charm.openstack.creds.changed")
-    refresh_requests = config_change or creds_changed
+    proxy_changed = is_flag_set("charm.openstack.proxy.changed")
+    refresh_requests = config_change or creds_changed or proxy_changed
     requests = (
         lb_consumers.all_requests if refresh_requests else lb_consumers.new_requests
     )
@@ -302,6 +336,8 @@ def manage_loadbalancers_via_lb_consumers():
                 request.name, members, lb_port, _lb_algo(request), "lb-consumers"
             )
             response.address = lb.fip or lb.address
+            response.error = None
+            response.error_message = ""
         except layer.openstack.OpenStackError as e:
             response.error = response.error_types.provider_error
             response.error_message = str(e)
