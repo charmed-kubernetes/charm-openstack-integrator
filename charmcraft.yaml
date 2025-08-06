@@ -35,5 +35,4 @@ parts:
     build-environment:
     - CHARM_LAYERS_DIR: $CRAFT_STAGE/tmp/layers/
     - CHARM_INTERFACES_DIR: $CRAFT_STAGE/tmp/interfaces/
-    - RELEASE_BRANCH: main
-
+    - RELEASE_BRANCH: release_1.34
