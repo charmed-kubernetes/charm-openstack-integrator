@@ -12,7 +12,7 @@ from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
-from typing import Generator
+from typing import Generator, Optional
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
@@ -907,7 +907,7 @@ class BaseLBImpl:
     def delete_fip(self, fip):
         _openstack("floating", "ip", "delete", fip)
 
-    def find_port(self, address):
+    def find_port(self, address) -> Optional[str]:
         port = _openstack(
             "port",
             "list",
@@ -918,7 +918,9 @@ class BaseLBImpl:
             "-f",
             "value",
         )
-        return port[0]["ID"] if port else None
+        if not port or "ID" not in port[0]:
+            return None
+        return port[0]["ID"]
 
     def get_subnet_cidr(self, name):
         return _openstack(
