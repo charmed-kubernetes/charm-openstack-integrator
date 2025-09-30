@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 
 @pytest.mark.abort_on_fail
-async def test_build_and_deploy(ops_test):
+async def test_build_and_deploy(ops_test, charmed_solution):
     """Build and deploy openstack-integrator in bundle."""
     charm = next(Path(".").glob("openstack-integrator*.charm"), None)
     if not charm:
@@ -20,8 +20,8 @@ async def test_build_and_deploy(ops_test):
         charm = await ops_test.build_charm(".")
 
     overlays = [
-        ops_test.Bundle("kubernetes-core", channel="edge"),
-        Path("tests/data/charm.yaml"),
+        ops_test.Bundle(charmed_solution, channel="edge"),
+        Path(f"tests/data/{charmed_solution}.yaml"),
     ]
 
     bundle, *overlays = await ops_test.async_render_bundles(
@@ -30,6 +30,11 @@ async def test_build_and_deploy(ops_test):
 
     log.info("Deploy Charm...")
     model = ops_test.model_full_name
+    if charmed_solution == "canonical-kubernetes":
+        cmd = "juju model-config" " container-networking-method=local" " fan-config=''"
+        rc, stdout, stderr = await ops_test.run(*shlex.split(cmd))
+        assert rc == 0, f"Model config failed: {(stderr or stdout).strip()}"
+
     cmd = f"juju deploy -m {model} {bundle} " + " ".join(
         f"--overlay={f} --trust" for f in overlays
     )
@@ -47,8 +52,6 @@ async def test_build_and_deploy(ops_test):
 async def test_status_messages(ops_test):
     """Validate that the status messages are correct."""
     expected_messages = {
-        "kubernetes-control-plane": "",
-        "kubernetes-worker": "",
         "openstack-integrator": "Ready",
     }
     for app, message in expected_messages.items():

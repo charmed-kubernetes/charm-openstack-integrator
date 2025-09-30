@@ -12,7 +12,7 @@ from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
-from typing import Generator
+from typing import Generator, Optional
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
@@ -232,7 +232,7 @@ class OpenStackError(Exception):
 
 class OpenStackLBError(OpenStackError):
     def __init__(self, action, exc=True):
-        action = action[:-1] + "ing"
+        action = (action[:-1] if action.endswith("e") else action) + "ing"
         if exc:
             log_err("Error {} loadbalancer\n{}", action, format_exc())
         super().__init__(
@@ -760,7 +760,7 @@ class LoadBalancer:
             for member in added_members:
                 self._impl.create_member(member)
                 if self.is_port_sec_enabled:
-                    self._add_member_sg(member)
+                    self._add_member_sg(member, raise_on_err=True)
                 log("Added member: {}", member)
                 self._wait_pool_not_pending()
         except subprocess.CalledProcessError:
@@ -779,9 +779,14 @@ class LoadBalancer:
             log("Created security group {} ({})", member_sg_name, member_sg_id)
         self.member_sg_id = member_sg_id
 
-    def _add_member_sg(self, member):
+    def _add_member_sg(self, member, raise_on_err):
         addr, port = member
         port_id = self._impl.find_port(addr)
+        if not port_id:
+            log_err(f"Unable to find port for {addr=} {port=}")
+            if raise_on_err:
+                raise OpenStackLBError(action="member-add", exc=False)
+            return
         if (
             self.member_sg_id
             not in _openstack("port", "show", port_id)["security_group_ids"]
@@ -810,7 +815,7 @@ class LoadBalancer:
                 # handle upgrade from before the member SG was handled
                 self._create_member_sg()
                 for member in self.members:
-                    self._add_member_sg(member)
+                    self._add_member_sg(member, raise_on_err=False)
             self.is_created = True
 
     def _update_cached_info(self):
@@ -902,8 +907,8 @@ class BaseLBImpl:
     def delete_fip(self, fip):
         _openstack("floating", "ip", "delete", fip)
 
-    def find_port(self, address):
-        return _openstack(
+    def find_port(self, address) -> Optional[str]:
+        port = _openstack(
             "port",
             "list",
             "--fixed-ip",
@@ -912,8 +917,10 @@ class BaseLBImpl:
             "ID",
             "-f",
             "value",
-            yaml_output=False,
         )
+        if not port or "ID" not in port[0]:
+            return None
+        return port[0]["ID"]
 
     def get_subnet_cidr(self, name):
         return _openstack(

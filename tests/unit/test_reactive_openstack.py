@@ -98,7 +98,7 @@ def test_validate_loadbalancer_request_no_errors():
     assert response.error_fields == {}
 
 
-class TestProtocol(enum.Enum):
+class Protocol(enum.Enum):
     http = "http"
 
 
@@ -108,7 +108,7 @@ class TestProtocol(enum.Enum):
         ("public", None, "Only support public loadbalancers"),
         (
             "protocol",
-            TestProtocol.http,
+            Protocol.http,
             "Must be one of: udp, tcp",
         ),
         (

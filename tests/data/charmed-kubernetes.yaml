@@ -1,14 +1,14 @@
 description: Overlay for attaching current charm
 applications:
-  kubernetes-control-plane:
-    options:
-      allow-privileged: "true"
+  kubernetes-control-plane: {}
   openstack-integrator:
     charm: {{charm}}
+    num_units: 1
     trust: true
   openstack-cloud-controller:
     charm: openstack-cloud-controller
     channel: edge
+    num_units: 1
   cinder-csi:
     charm: cinder-csi
     channel: edge
@@ -20,4 +20,4 @@ relations:
 - [cinder-csi:certificates, easyrsa:client]
 - [cinder-csi:kube-control, kubernetes-control-plane:kube-control]
 - [cinder-csi:openstack, openstack-integrator:clients]
-- [kubernetes-control-plane:loadbalancer-external, openstack-integrator:lb-consumer]
+- [kubernetes-control-plane:loadbalancer-external, openstack-integrator:lb-consumers]

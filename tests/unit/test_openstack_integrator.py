@@ -544,6 +544,16 @@ def test_find(impl, log_err):
     )
 
 
+def test_member_sg_failure(impl, _openstack):
+    impl.find_port.return_value = None
+    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", None, False)
+    lb.address = "1.1.1.1"
+    lb.members = {(1, 2)}
+    with pytest.raises(openstack.OpenStackLBError) as excinfo:
+        lb.update_members({(1, 2), (3, 4)})
+    assert "Error while member-adding load balancer" in str(excinfo.value)
+
+
 def test_update_members(impl, _openstack):
     lb = openstack.LoadBalancer("app", "80", "subnet", "alg", None, False)
     lb.address = "1.1.1.1"
