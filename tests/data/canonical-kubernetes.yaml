@@ -1,0 +1,24 @@
+description: Overlay for attaching charm to canonical k8s
+applications:
+  k8s:
+    num_units: 1
+    expose: true
+  k8s-worker:
+    num_units: 1
+  openstack-integrator:
+    charm: {{charm}}
+    num_units: 1
+    trust: true
+  openstack-cloud-controller:
+    charm: openstack-cloud-controller
+    channel: edge
+  cinder-csi:
+    charm: cinder-csi
+    channel: edge
+relations:
+- [openstack-cloud-controller:kube-control, k8s:kube-control]
+- [openstack-cloud-controller:external-cloud-provider, k8s:external-cloud-provider]
+- [openstack-cloud-controller:openstack, openstack-integrator:clients]
+- [cinder-csi:kube-control, k8s:kube-control]
+- [cinder-csi:openstack, openstack-integrator:clients]
+- [k8s:external-load-balancer, openstack-integrator:lb-consumers]

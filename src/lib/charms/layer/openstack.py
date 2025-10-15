@@ -6,14 +6,18 @@ import os
 import subprocess
 import tempfile
 from base64 import b64decode, b64encode
+from contextlib import contextmanager
+from functools import lru_cache
 from ipaddress import ip_address, ip_network
 from pathlib import Path
 from time import sleep
 from traceback import format_exc
+from typing import Generator, Optional
 from urllib.request import urlopen
 from urllib.parse import urlparse
 from urllib.error import HTTPError
 
+import charms.proxylib
 import yaml
 
 from charmhelpers.core import hookenv
@@ -23,6 +27,7 @@ from charms.layer import status
 
 
 CACHED_LB_PREFIX = "created_lbs"
+ENDPOINT_TIMEOUT = 30.0  # seconds
 
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.
@@ -31,7 +36,7 @@ os.environ["HOME"] = "/root"
 CA_CERT_FILE = Path("/var/snap/openstackclients/common/ca.crt")
 MODEL_UUID = os.environ["JUJU_MODEL_UUID"]
 MODEL_SHORT_ID = MODEL_UUID.split("-")[-1]
-config = hookenv.config()
+Env = dict[str, str] | os._Environ
 
 
 def log(msg, *args):
@@ -210,6 +215,7 @@ def manage_loadbalancer(
     app_name, members, lb_port, lb_algorithm, endpoint_name="lb-consumers"
 ):
     log("Managing load balancer for {}", app_name)
+    config = hookenv.config()
     subnet = config["lb-subnet"] or _default_subnet(members, endpoint_name)
     fip_net = config["lb-floating-network"]
     manage_secgrps = config["manage-security-groups"]
@@ -226,7 +232,7 @@ class OpenStackError(Exception):
 
 class OpenStackLBError(OpenStackError):
     def __init__(self, action, exc=True):
-        action = action[:-1] + "ing"
+        action = (action[:-1] if action.endswith("e") else action) + "ing"
         if exc:
             log_err("Error {} loadbalancer\n{}", action, format_exc())
         super().__init__(
@@ -325,6 +331,35 @@ def _load_creds():
     return kv().get("charm.openstack.full-creds")
 
 
+@lru_cache(maxsize=1)
+def cached_openstack_proxied() -> dict[str, str]:
+    with openstack_proxied({}) as proxied:
+        return {**proxied}
+
+
+@contextmanager
+def openstack_proxied(env: Env) -> Generator[Env, None, None]:
+    """
+    Context manager to set the proxy environment variables for the OpenStack
+    client. This is used to ensure that the OpenStack client can access the
+    OpenStack API through the proxy.
+
+    Arguments:
+        env: The environment variables to update to reach the OpenStack API.
+             This can be a dictionary or os._Environ object.
+
+    Yields:
+        A dictionary with the updated environment variables.
+    """
+    config = hookenv.config()
+    enabled = bool(config.get("web-proxy-enable"))
+    with charms.proxylib.environ(env, enabled=enabled) as proxy_env:
+        if err := proxy_env.error:
+            log_err("Error while getting proxy settings: {}", err)
+            status.blocked(err)
+        yield {**env}
+
+
 def _run_with_creds(*args):
     creds = _load_creds()
     env = {
@@ -358,7 +393,14 @@ def _run_with_creds(*args):
     if CA_CERT_FILE.exists():
         env["OS_CACERT"] = str(CA_CERT_FILE)
 
-    result = subprocess.run(args, env=env, check=True, stdout=subprocess.PIPE)
+    with openstack_proxied(env) as proxy_env:
+        result = subprocess.run(
+            args,
+            env=proxy_env,
+            check=True,
+            stdout=subprocess.PIPE,
+            timeout=ENDPOINT_TIMEOUT,
+        )
     return result.stdout.decode("utf8")
 
 
@@ -400,15 +442,17 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
 
     with _ca_cert_temp(endpoint_tls_ca) as ca_file:
         try:
-            with urlopen(endpoint, cafile=ca_file) as fp:
-                info = json.loads(fp.read(600).decode("utf8"))
-                version = str(info["version"]["id"]).split(".")[0].lstrip("v")
+            with openstack_proxied(os.environ):
+                with urlopen(endpoint, cafile=ca_file, timeout=ENDPOINT_TIMEOUT) as fp:
+                    info = json.loads(fp.read(600).decode("utf8"))
+                    version = str(info["version"]["id"]).split(".")[0].lstrip("v")
         except (
             HTTPError,
             json.JSONDecodeError,
             UnicodeDecodeError,
             KeyError,
             ValueError,
+            TimeoutError,
         ) as e:
             log_err("Failed to determine API version: {}", e)
     return version
@@ -717,7 +761,7 @@ class LoadBalancer:
             for member in added_members:
                 self._impl.create_member(member)
                 if self.is_port_sec_enabled:
-                    self._add_member_sg(member)
+                    self._add_member_sg(member, raise_on_err=True)
                 log("Added member: {}", member)
                 self._wait_pool_not_pending()
         except subprocess.CalledProcessError:
@@ -736,9 +780,14 @@ class LoadBalancer:
             log("Created security group {} ({})", member_sg_name, member_sg_id)
         self.member_sg_id = member_sg_id
 
-    def _add_member_sg(self, member):
+    def _add_member_sg(self, member, raise_on_err):
         addr, port = member
         port_id = self._impl.find_port(addr)
+        if not port_id:
+            log_err(f"Unable to find port for {addr=} {port=}")
+            if raise_on_err:
+                raise OpenStackLBError(action="member-add", exc=False)
+            return
         if (
             self.member_sg_id
             not in _openstack("port", "show", port_id)["security_group_ids"]
@@ -768,7 +817,7 @@ class LoadBalancer:
                 # handle upgrade from before the member SG was handled
                 self._create_member_sg()
                 for member in self.members:
-                    self._add_member_sg(member)
+                    self._add_member_sg(member, raise_on_err=False)
             self.is_created = True
 
     def _update_cached_info(self):
@@ -860,8 +909,8 @@ class BaseLBImpl:
     def delete_fip(self, fip):
         _openstack("floating", "ip", "delete", fip)
 
-    def find_port(self, address):
-        return _openstack(
+    def find_port(self, address) -> Optional[str]:
+        port = _openstack(
             "port",
             "list",
             "--fixed-ip",
@@ -870,8 +919,10 @@ class BaseLBImpl:
             "ID",
             "-f",
             "value",
-            yaml_output=False,
         )
+        if not port or "ID" not in port[0]:
+            return None
+        return port[0]["ID"]
 
     def get_subnet_cidr(self, name):
         return _openstack(

@@ -1,4 +1,4 @@
-repo: 'https://github.com/juju-solutions/charm-openstack-integrator'
+repo: 'https://github.com/charmed-kubernetes/charm-openstack-integrator'
 includes:
   - 'layer:basic'
   - 'layer:status'
