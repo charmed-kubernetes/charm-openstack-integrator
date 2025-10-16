@@ -615,7 +615,8 @@ class LoadBalancer:
             # If using Octavia the SG will have been created by Octavia and
             # therefore only an admin or Octavia itself can access it.
             if self.sg_id:
-                self._impl.create_sg_rule(sg_id, self.address, self.port)
+                subnet_cidr = self._impl.get_subnet_cidr(self.subnet)
+                self._impl.create_sg_rule(sg_id, subnet_cidr, self.port)
                 log(
                     "Added rule for {}:{} to security group {} ({})",
                     self.address,
@@ -793,7 +794,8 @@ class LoadBalancer:
         ):
             self._impl.set_port_secgrp(port_id, self.member_sg_id)
         if not self._find_matching_sg_rule(self.member_sg_id, self.address, port):
-            self._impl.create_sg_rule(self.member_sg_id, self.address, port)
+            subnet_cidr = self._impl.get_subnet_cidr(self.subnet)
+            self._impl.create_sg_rule(self.member_sg_id, subnet_cidr, port)
 
     def delete(self):
         """Delete this loadbalancer and all of its resources."""
