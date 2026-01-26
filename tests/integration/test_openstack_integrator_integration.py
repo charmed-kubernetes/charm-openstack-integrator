@@ -7,7 +7,6 @@ from pathlib import Path
 from lightkube.codecs import from_dict
 from lightkube.resources.core_v1 import Node
 
-
 log = logging.getLogger(__name__)
 
 

@@ -25,9 +25,9 @@ from charmhelpers.core.unitdata import kv
 
 from charms.layer import status
 
-
 CACHED_LB_PREFIX = "created_lbs"
 ENDPOINT_TIMEOUT = 30.0  # seconds
+DEFAULT_PROTOCOL = "HTTPS"
 
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.
@@ -212,7 +212,12 @@ def _default_subnet(members, endpoint_name):
 
 
 def manage_loadbalancer(
-    app_name, members, lb_port, lb_algorithm, endpoint_name="lb-consumers"
+    app_name,
+    members,
+    lb_port,
+    lb_algorithm,
+    lb_proto: str,
+    endpoint_name="lb-consumers",
 ):
     log("Managing load balancer for {}", app_name)
     config = hookenv.config()
@@ -220,7 +225,7 @@ def manage_loadbalancer(
     fip_net = config["lb-floating-network"]
     manage_secgrps = config["manage-security-groups"]
     lb_manager = LoadBalancer.get_or_create(
-        app_name, str(lb_port), subnet, lb_algorithm, fip_net, manage_secgrps
+        app_name, str(lb_port), subnet, lb_algorithm, lb_proto, fip_net, manage_secgrps
     )
     lb_manager.update_members([(addr, str(port)) for addr, port in members])
     return lb_manager
@@ -482,13 +487,15 @@ class LoadBalancer:
     octavia_available = None
 
     @classmethod
-    def get_or_create(cls, app_name, port, subnet, algorithm, fip_net, manage_secgrps):
+    def get_or_create(
+        cls, app_name, port, subnet, algorithm, proto, fip_net, manage_secgrps
+    ):
         """
         Create a client instance for the given LB.
 
         Returns the proper subclass depending on whether Octavia is available.
         """
-        lb = cls(app_name, port, subnet, algorithm, fip_net, manage_secgrps)
+        lb = cls(app_name, port, subnet, algorithm, proto, fip_net, manage_secgrps)
         if not lb.is_created:
             try:
                 lb.create()
@@ -507,15 +514,19 @@ class LoadBalancer:
             cached_info["port"],
             cached_info["subnet"],
             cached_info["algorithm"],
+            cached_info.get("proto") or DEFAULT_PROTOCOL,
             cached_info["fip_net"],
             cached_info["manage_secgrps"],
         )
 
-    def __init__(self, app_name, port, subnet, algorithm, fip_net, manage_secgrps):
+    def __init__(
+        self, app_name, port, subnet, algorithm, proto, fip_net, manage_secgrps
+    ):
         self.app_name = app_name
         self.port = port
         self.subnet = subnet
         self.algorithm = algorithm
+        self.proto = proto
         self.fip_net = fip_net
         self.manage_secgrps = manage_secgrps
         self.sg_id = None
@@ -555,6 +566,7 @@ class LoadBalancer:
                 self.port,
                 self.subnet,
                 self.algorithm,
+                self.proto,
                 self.fip_net,
                 self.manage_secgrps,
             )
@@ -564,6 +576,7 @@ class LoadBalancer:
                 self.port,
                 self.subnet,
                 self.algorithm,
+                self.proto,
                 self.fip_net,
                 self.manage_secgrps,
             )
@@ -812,6 +825,11 @@ class LoadBalancer:
             self.fip = info["fip"]
             self.address = info["address"]
             self.members = {tuple(m) for m in info["members"]}
+            # handle upgrade from before protocol was cached
+            # This supports the case where prior LBs were created
+            # with HTTPS as the protocol even if the requested protocol
+            # was UDP or TCP.
+            self.proto = info.get("proto") or DEFAULT_PROTOCOL
             self.member_sg_id = info.get("member_sg_id")
             if self.member_sg_id is None and self.is_port_sec_enabled:
                 # handle upgrade from before the member SG was handled
@@ -828,6 +846,7 @@ class LoadBalancer:
                 "port": self.port,
                 "subnet": self.subnet,
                 "algorithm": self.algorithm,
+                "proto": self.proto,
                 "fip_net": self.fip_net,
                 "manage_secgrps": self.manage_secgrps,
                 "sg_id": self.sg_id,
@@ -842,11 +861,12 @@ class LoadBalancer:
 
 
 class BaseLBImpl:
-    def __init__(self, name, port, subnet, algorithm, fip_net, manage_secgrps):
+    def __init__(self, name, port, subnet, algorithm, proto, fip_net, manage_secgrps):
         self.name = name
         self.port = port
         self.subnet = subnet
         self.algorithm = algorithm
+        self.proto = proto
         self.fip_net = fip_net
         self.manage_secgrps = manage_secgrps
 
@@ -1013,7 +1033,7 @@ class OctaviaLBImpl(BaseLBImpl):
             "--name",
             self.name,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
             "--protocol-port",
             self.port,
             self.name,
@@ -1040,7 +1060,7 @@ class OctaviaLBImpl(BaseLBImpl):
             "--lb-algorithm",
             self.algorithm,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
         )
 
     def delete_pool(self):
@@ -1144,7 +1164,7 @@ class NeutronLBImpl(BaseLBImpl):
             "--name",
             self.name,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
             "--protocol-port",
             self.port,
             "--loadbalancer",
@@ -1170,7 +1190,7 @@ class NeutronLBImpl(BaseLBImpl):
             "--lb-algorithm",
             self.algorithm,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
         )
 
     def delete_pool(self):
