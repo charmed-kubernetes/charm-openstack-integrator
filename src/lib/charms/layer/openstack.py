@@ -1,5 +1,6 @@
 import binascii
 import contextlib
+import enum
 import json
 import re
 import os
@@ -29,6 +30,16 @@ CACHED_LB_PREFIX = "created_lbs"
 ENDPOINT_TIMEOUT = 30.0  # seconds
 DEFAULT_PROTOCOL = "HTTPS"
 
+
+class HC_TYPE(enum.Enum):
+    TLS_HELLO = "TLS-HELLO"
+    HTTP = "HTTP"
+    TCP = "TCP"
+    UDP_CONNECT = "UDP-CONNECT"
+
+
+DEFAULT_HC_TYPE = HC_TYPE.TLS_HELLO
+
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.
 os.environ["HOME"] = "/root"
@@ -45,6 +56,26 @@ def log(msg, *args):
 
 def log_err(msg, *args):
     hookenv.log(msg.format(*args), hookenv.ERROR)
+
+
+def _healthmonitor_type_by_proto(provider: str, proto: str) -> HC_TYPE:
+    proto = proto.upper()
+    provider = provider.lower()
+
+    if not provider:
+        return DEFAULT_HC_TYPE
+
+    if provider == "ovn":
+        # OVN can only handle TCP / UDP checks
+        return HC_TYPE.TCP if proto != "UDP" else HC_TYPE.UDP_CONNECT
+
+    if proto == "HTTPS":
+        return DEFAULT_HC_TYPE
+
+    if proto == "TERMINATED_HTTPS":
+        return HC_TYPE.HTTP
+
+    return HC_TYPE.TCP
 
 
 def update_credentials():
@@ -687,7 +718,7 @@ class LoadBalancer:
         if lb_healthmonitor_info:
             log("Found loadbalancer healthmonitor: {}", lb_healthmonitor_info)
         else:
-            lb_healthmonitor_info = self._impl.create_healthmonitor()
+            lb_healthmonitor_info = self._impl.create_healthmonitor(lb_info["provider"])
             # check if created; some backends don't support it
             if lb_healthmonitor_info:
                 log(
@@ -991,7 +1022,7 @@ class BaseLBImpl:
     def delete_member(self, member):
         raise NotImplementedError()
 
-    def create_healthmonitor(self):
+    def create_healthmonitor(self, provider_type: str):
         raise NotImplementedError()
 
     def list_healthmonitors(self) -> list:
@@ -1098,7 +1129,7 @@ class OctaviaLBImpl(BaseLBImpl):
             "loadbalancer", "member", "delete", self.name, addr, yaml_output=False
         )
 
-    def create_healthmonitor(self):
+    def create_healthmonitor(self, provider_type: str):
         """
         Create an opinionated health monitor
         designed to monitor the kubernetes master service.
@@ -1116,7 +1147,7 @@ class OctaviaLBImpl(BaseLBImpl):
             "--timeout",
             "10",
             "--type",
-            "TLS-HELLO",
+            _healthmonitor_type_by_proto(provider_type, self.proto).value,
             "--name",
             self.name,
             self.name,
@@ -1223,7 +1254,7 @@ class NeutronLBImpl(BaseLBImpl):
         addr, _ = member
         _neutron("lbaas-member-delete", addr, self.name)
 
-    def create_healthmonitor(self):
+    def create_healthmonitor(self, provider_type: str):
         """not implemented for neutron"""
         return
 

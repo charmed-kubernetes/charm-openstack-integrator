@@ -360,6 +360,7 @@ def test_create_new(impl, log_err, kv):
         "id": "1234",
         "vip_address": "1.1.1.1",
         "vip_port_id": "4321",
+        "provider": "amphora",
     }
     impl.show_loadbalancer.return_value = {"provisioning_status": "ACTIVE"}
     impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
@@ -404,6 +405,7 @@ def test_create_new(impl, log_err, kv):
     impl.list_fips.return_value = []
     lb.create()
     assert lb.sg_id == "sg_id"
+    impl.create_healthmonitor.assert_has_calls([mock.call("amphora")])
     impl.create_secgrp.assert_has_calls(
         [
             mock.call("openstack-integrator-1234-app"),
@@ -839,3 +841,37 @@ def test_normalize_creds(_determine_version, log_err):
 
     attrs["endpoint-tls-ca"] = attrs.pop("cacertificates")[0]
     assert openstack._normalize_creds(attrs) == expected
+
+
+@pytest.mark.parametrize(
+    "provider,proto, hc_type",
+    [
+        ("", "anything", "TLS-HELLO"),
+        ("amphora", "TCP", "TCP"),
+        ("amphora", "HTTPS", "TLS-HELLO"),
+        ("amphora", "TERMINATED_HTTPS", "HTTP"),
+        ("ovn", "TCP", "TCP"),
+        ("ovn", "UDP", "UDP-CONNECT"),
+    ],
+)
+@mock.patch.object(openstack, "_openstack")
+def test_octavia_create_healthmonitor(cmd, provider, proto, hc_type):
+    args = ("app", "80", "subnet", "alg", proto, None, False)
+    lb_impl = openstack.OctaviaLBImpl(*args)
+    lb_impl.create_healthmonitor(provider)
+    cmd.assert_called_with(
+        "loadbalancer",
+        "healthmonitor",
+        "create",
+        "--delay",
+        "5",
+        "--max-retries",
+        "4",
+        "--timeout",
+        "10",
+        "--type",
+        hc_type,
+        "--name",
+        "app",
+        "app",
+    )
