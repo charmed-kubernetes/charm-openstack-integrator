@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 import charms.layer
 
 from charms.unit_test import patch_fixture
+from loadbalancer_interface.schemas.v1 import HealthCheck
 import reactive.openstack
 
 openstack = charms.layer.openstack
@@ -281,7 +282,7 @@ def test_manage_loadbalancer(mock_lb, mock_subnet):
     members = [("1.2.3.4", 80)]
     assert (
         openstack.manage_loadbalancer(
-            "my-ha-app", members, lb_port, lb_method, lb_proto, "lb-consumers"
+            "my-ha-app", members, lb_port, lb_method, lb_proto, None, "lb-consumers"
         )
         is lb_manager
     )
@@ -292,6 +293,7 @@ def test_manage_loadbalancer(mock_lb, mock_subnet):
         mock_subnet.return_value,
         lb_method,
         lb_proto,
+        None,
         "fip-network",
         False,
     )
@@ -302,7 +304,7 @@ def test_manage_loadbalancer(mock_lb, mock_subnet):
 @mock.patch.object(openstack.LoadBalancer, "_create_member_sg")
 @mock.patch.object(openstack.LoadBalancer, "create")
 def test_get_or_create(create, cms, ams, kv):
-    args = ("app", "80", "subnet", "alg", "proto", None, False)
+    args = ("app", "80", "subnet", "alg", "proto", None, None, False)
     kv().get.return_value = {
         "sg_id": "sg_id",
         "member_sg_id": "member_sg_id",
@@ -353,7 +355,9 @@ def test_get_or_create(create, cms, ams, kv):
 
 def test_create_new(impl, log_err, kv):
     kv().get.return_value = None
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", None, False)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, None, False
+    )
     assert not lb.is_created
     impl.list_loadbalancers.return_value = []
     impl.create_loadbalancer.return_value = {
@@ -405,7 +409,7 @@ def test_create_new(impl, log_err, kv):
     impl.list_fips.return_value = []
     lb.create()
     assert lb.sg_id == "sg_id"
-    impl.create_healthmonitor.assert_has_calls([mock.call("amphora")])
+    impl.create_healthmonitor.assert_has_calls([mock.call(openstack.DEFAULT_HC_REQ, 0)])
     impl.create_secgrp.assert_has_calls(
         [
             mock.call("openstack-integrator-1234-app"),
@@ -418,7 +422,9 @@ def test_create_new(impl, log_err, kv):
 
 def test_create_recover(impl, kv):
     kv().get.return_value = None
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", "net", True)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, "net", True
+    )
     impl.list_loadbalancers.return_value = [{"name": "openstack-integrator-1234-app"}]
     impl.show_loadbalancer.return_value = {
         "id": "2345",
@@ -486,7 +492,9 @@ def test_load_from_cache(impl, kv):
 
 def test_delete_loadbalancer(impl, kv):
     kv().get.return_value = None
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", "net", True)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, "net", True
+    )
     lb.delete()
 
     impl.get_port_sec_enabled.assert_called_once()
@@ -495,7 +503,9 @@ def test_delete_loadbalancer(impl, kv):
 
 
 def test_wait_not_pending(impl):
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", None, False)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, None, False
+    )
     test_func = mock.Mock(
         side_effect=[
             {"provisioning_status": "PENDING_CREATE"},
@@ -518,7 +528,9 @@ def test_wait_not_pending(impl):
 
 
 def test_find_matching_sg_rule(impl):
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", None, False)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, None, False
+    )
     lb.address = "1.1.1.1"
 
     impl.list_sg_rules.return_value = [{"Port Range": None, "IP Range": None}]
@@ -541,7 +553,9 @@ def test_find_matching_sg_rule(impl):
 
 
 def test_find(impl, log_err):
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", None, False)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, None, False
+    )
     item1 = {"id": 1, "name": "not-lb"}
     item2 = {"id": 2, "name": "openstack-integrator-1234-app"}
     item3 = {"id": 3, "name": "openstack-integrator-1234-app"}
@@ -556,7 +570,9 @@ def test_find(impl, log_err):
 
 def test_member_sg_failure(impl, _openstack):
     impl.find_port.return_value = None
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", None, False)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, None, False
+    )
     lb.address = "1.1.1.1"
     lb.members = {(1, 2)}
     with pytest.raises(openstack.OpenStackLBError) as excinfo:
@@ -565,7 +581,9 @@ def test_member_sg_failure(impl, _openstack):
 
 
 def test_update_members(impl, _openstack):
-    lb = openstack.LoadBalancer("app", "80", "subnet", "alg", "proto", None, False)
+    lb = openstack.LoadBalancer(
+        "app", "80", "subnet", "alg", "proto", None, None, False
+    )
     lb.address = "1.1.1.1"
     impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
     impl.list_sg_rules.return_value = []
@@ -844,34 +862,60 @@ def test_normalize_creds(_determine_version, log_err):
 
 
 @pytest.mark.parametrize(
-    "provider,proto, hc_type",
+    "provider,proto,req,args",
     [
-        ("", "anything", "TLS-HELLO"),
-        ("amphora", "TCP", "TCP"),
-        ("amphora", "HTTPS", "TLS-HELLO"),
-        ("amphora", "TERMINATED_HTTPS", "HTTP"),
-        ("ovn", "TCP", "TCP"),
-        ("ovn", "UDP", "UDP-CONNECT"),
+        ("ovn", "HTTPS", "https,6334,/health", ["--type", "TCP"]),
+        ("ovn", "HTTP", "https,6334,/health", ["--type", "TCP"]),
+        ("ovn", "TCP", "https,6334,/health", ["--type", "TCP"]),
+        ("ovn", "UDP", "https,6334,/health", ["--type", "UDP-CONNECT"]),
+        (
+            "amphora",
+            "TCP",
+            "https,6334,/health",
+            [
+                "--type",
+                "HTTPS",
+                "--url-path",
+                "/health",
+                "--http-method",
+                "GET",
+                "--expected-codes",
+                "200-499",
+            ],
+        ),
+        (
+            "amphora",
+            "HTTPS",
+            "https,6334,",
+            [
+                "--type",
+                "TLS-HELLO",
+            ],
+        ),
     ],
 )
 @mock.patch.object(openstack, "_openstack")
-def test_octavia_create_healthmonitor(cmd, provider, proto, hc_type):
-    args = ("app", "80", "subnet", "alg", proto, None, False)
-    lb_impl = openstack.OctaviaLBImpl(*args)
-    lb_impl.create_healthmonitor(provider)
-    cmd.assert_called_with(
-        "loadbalancer",
-        "healthmonitor",
-        "create",
-        "--delay",
-        "5",
-        "--max-retries",
-        "4",
-        "--timeout",
-        "10",
-        "--type",
-        hc_type,
-        "--name",
-        "app",
-        "app",
-    )
+@mock.patch.object(openstack.OctaviaLBImpl, "show_loadbalancer")
+def test_octavia_create_healthmonitor(show_lb, cmd, provider, proto, req, args):
+    lb_args = ("app", "80", "subnet", "alg", proto, None, False)
+    hc_proto, port, path = req.split(",")
+    hc = [HealthCheck()._update(protocol=hc_proto, port=int(port), path=path)]
+    show_lb.return_value = {"provider": provider, "name": "app"}
+    lb_impl = openstack.OctaviaLBImpl(*lb_args)
+    for index, req in enumerate(hc):
+        lb_impl.create_healthmonitor(req, index)
+        cmd.assert_called_with(
+            "loadbalancer",
+            "healthmonitor",
+            "create",
+            "--delay",
+            "5",
+            "--max-retries",
+            "3",
+            "--timeout",
+            "30",
+            *args,
+            "--name",
+            "app",
+            "app",
+        )

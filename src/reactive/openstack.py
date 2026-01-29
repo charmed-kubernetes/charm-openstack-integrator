@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 SUPPORTED_LB_PROTOS = ["udp", "tcp", "https"]
 SUPPORTED_LB_ALGS = ["ROUND_ROBIN", "LEAST_CONNECTIONS", "SOURCE_IP"]
-SUPPORTED_LB_HC_PROTOS = ["http", "https", "tcp"]
+SUPPORTED_LB_HC_PROTOS = ["ping", "http", "https", "tls-hello", "udp-connect", "sctp"]
 
 
 @when_all("snap.installed.openstackclients")
@@ -241,12 +241,14 @@ def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
         error_fields["tls_termination"] = "Not yet supported"
 
     for i, hc in enumerate(request.health_checks):
+        if i > 0:
+            error_fields[f"hc[{i}]"] = "Only supports up to 1 health check"
         if hc.protocol.value not in SUPPORTED_LB_HC_PROTOS:
-            error_fields["hc[{}].protocol".format(i)] = "Must be one of: {}".format(
-                ", ".join(SUPPORTED_LB_PROTOS)
+            error_fields[f"hc[{i}].protocol"] = "Must be one of: {}".format(
+                ", ".join(SUPPORTED_LB_HC_PROTOS)
             )
         if hc.path and hc.protocol.value not in ("http", "https"):
-            error_fields["hc[{}].path".format(i)] = "Only valid with http(s) protocol"
+            error_fields[f"hc[{i}].path"] = "Only valid with http(s) protocol"
 
     remote_port: Optional[int] = None
     config = hookenv.config()
@@ -350,6 +352,7 @@ def manage_loadbalancers_via_lb_consumers():
                 lb_port,
                 _lb_algo(request),
                 _lb_proto(request),
+                request.health_checks[0] if request.health_checks else None,
                 "lb-consumers",
             )
             response.address = lb.fip or lb.address
