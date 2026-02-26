@@ -311,7 +311,7 @@ def manage_loadbalancers_via_loadbalancer():
                 lb_port,
                 _lb_algo(request),
                 _lb_proto(request),
-                "loadbalancer",
+                endpoint_name="loadbalancer",
             )
             request.set_address_port(lb.fip or lb.address, lb.port)
     except layer.openstack.OpenStackError as e:
