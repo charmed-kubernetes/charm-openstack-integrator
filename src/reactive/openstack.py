@@ -21,9 +21,9 @@ if TYPE_CHECKING:
         Response as LBResponse,
     )
 
-SUPPORTED_LB_PROTOS = ["udp", "tcp"]
+SUPPORTED_LB_PROTOS = ["udp", "tcp", "https"]
 SUPPORTED_LB_ALGS = ["ROUND_ROBIN", "LEAST_CONNECTIONS", "SOURCE_IP"]
-SUPPORTED_LB_HC_PROTOS = ["http", "https", "tcp"]
+SUPPORTED_LB_HC_PROTOS = ["ping", "http", "https", "tls-hello", "udp-connect", "sctp"]
 
 
 @when_all("snap.installed.openstackclients")
@@ -207,6 +207,17 @@ def _lb_algo(request):
     return None
 
 
+def _lb_proto(request):
+    """
+    Choose a supported protocol for the request.
+    """
+    if not hasattr(request, "protocol") or not request.protocol:
+        return None
+    if request.protocol.value not in SUPPORTED_LB_PROTOS:
+        return None
+    return request.protocol.value.upper()
+
+
 def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
     """
     Validate the incoming request.
@@ -216,7 +227,7 @@ def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
     if not request.public:
         error_fields["public"] = "Only support public loadbalancers"
 
-    if request.protocol.value not in SUPPORTED_LB_PROTOS:
+    if not _lb_proto(request):
         error_fields["protocol"] = "Must be one of: {}".format(
             ", ".join(SUPPORTED_LB_PROTOS)
         )
@@ -230,12 +241,14 @@ def _validate_loadbalancer_request(request: "LBRequest") -> "LBResponse":
         error_fields["tls_termination"] = "Not yet supported"
 
     for i, hc in enumerate(request.health_checks):
+        if i > 0:
+            error_fields[f"hc[{i}]"] = "Only supports up to 1 health check"
         if hc.protocol.value not in SUPPORTED_LB_HC_PROTOS:
-            error_fields["hc[{}].protocol".format(i)] = "Must be one of: {}".format(
-                ", ".join(SUPPORTED_LB_PROTOS)
+            error_fields[f"hc[{i}].protocol"] = "Must be one of: {}".format(
+                ", ".join(SUPPORTED_LB_HC_PROTOS)
             )
         if hc.path and hc.protocol.value not in ("http", "https"):
-            error_fields["hc[{}].path".format(i)] = "Only valid with http(s) protocol"
+            error_fields[f"hc[{i}].path"] = "Only valid with http(s) protocol"
 
     remote_port: Optional[int] = None
     config = hookenv.config()
@@ -297,7 +310,8 @@ def manage_loadbalancers_via_loadbalancer():
                 request.members,
                 lb_port,
                 _lb_algo(request),
-                "loadbalancer",
+                _lb_proto(request),
+                endpoint_name="loadbalancer",
             )
             request.set_address_port(lb.fip or lb.address, lb.port)
     except layer.openstack.OpenStackError as e:
@@ -333,7 +347,13 @@ def manage_loadbalancers_via_lb_consumers():
         try:
             members = [(addr, remote_port) for addr in request.backends]
             lb = layer.openstack.manage_loadbalancer(
-                request.name, members, lb_port, _lb_algo(request), "lb-consumers"
+                request.name,
+                members,
+                lb_port,
+                _lb_algo(request),
+                _lb_proto(request),
+                request.health_checks[0] if request.health_checks else None,
+                "lb-consumers",
             )
             response.address = lb.fip or lb.address
             response.error = None

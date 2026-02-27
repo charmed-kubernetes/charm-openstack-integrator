@@ -109,7 +109,7 @@ class Protocol(enum.Enum):
         (
             "protocol",
             Protocol.http,
-            "Must be one of: udp, tcp",
+            "Must be one of: udp, tcp, https",
         ),
         (
             "algorithm",
@@ -122,7 +122,8 @@ class Protocol(enum.Enum):
             [mock.MagicMock(protocol=mock.MagicMock(value="ftp"))],
             {
                 "hc[0].path": "Only valid with http(s) protocol",
-                "hc[0].protocol": "Must be one of: udp, tcp",
+                "hc[0].protocol": "Must be one of: ping, http, "
+                "https, tls-hello, udp-connect, sctp",
             },
         ),
         (

@@ -1,10 +1,13 @@
 import binascii
 import contextlib
+import dataclasses
+import enum
 import json
 import re
 import os
 import subprocess
 import tempfile
+from loadbalancer_interface.schemas.v1 import HealthCheck
 from base64 import b64decode, b64encode
 from contextlib import contextmanager
 from functools import lru_cache
@@ -25,9 +28,31 @@ from charmhelpers.core.unitdata import kv
 
 from charms.layer import status
 
-
 CACHED_LB_PREFIX = "created_lbs"
 ENDPOINT_TIMEOUT = 30.0  # seconds
+DEFAULT_PROTOCOL = "HTTPS"
+DEFAULT_HC_DELAY = 5
+
+
+class HC_TYPE(enum.Enum):
+    HTTP = "HTTP"
+    HTTPS = "HTTPS"
+    TCP = "TCP"
+    TLS_HELLO = "TLS-HELLO"  # Fallback for HTTP(S) without path
+    UDP_CONNECT = "UDP-CONNECT"  # Mapping for "udp" health check
+    # The following are supported by openstack, but not valid in the relation
+    # PING = "PING"
+    # SCTP = "SCTP"
+
+
+"""
+For backwards compatibility
+Maintain the previous fallback protocol TLS-HELLO
+"""
+DEFAULT_HC_REQ = HealthCheck()
+DEFAULT_HC_REQ.protocol = HC_TYPE.TLS_HELLO.value
+DEFAULT_HC_REQ.interval = 10
+DEFAULT_HC_REQ.retries = 4
 
 # When debugging hooks, for some reason HOME is set to /home/ubuntu, whereas
 # during normal hook execution, it's /root. Set it here to be consistent.
@@ -45,6 +70,101 @@ def log(msg, *args):
 
 def log_err(msg, *args):
     hookenv.log(msg.format(*args), hookenv.ERROR)
+
+
+@dataclasses.dataclass
+class HCOpts:
+    # BASED on the CreateOpts from gophercloud openstack.loadbalancer.v2.monitors
+    # https://pkg.go.dev/github.com/gophercloud/gophercloud@v1.14.1/openstack/loadbalancer/v2/monitors#CreateOpts
+    name: str
+
+    # The type of probe, which is PING, TCP, HTTP, or HTTPS, that is
+    # sent by the load balancer to verify the member state.
+    type: str
+
+    # The time, in seconds, between sending probes to members.
+    delay: int
+
+    # Maximum number of seconds for a Monitor to wait for a ping reply
+    # before it times out. The value must be less than the delay value.
+    timeout: int
+
+    # Number of permissible ping failures before changing the member's
+    # status to INACTIVE. Must be a number between 1 and 10.
+    max_retries: int
+
+    # Number of permissible ping failures before changing the member's
+    # status to ERROR. Must be a number between 1 and 10.
+    max_retries_down: Optional[int] = None
+
+    # URI path that will be accessed if Monitor type is HTTP or HTTPS.
+    url_path: Optional[str] = None
+
+    # The HTTP method used for requests by the Monitor. If this attribute
+    # is not specified, it defaults to "GET". Required for HTTP(S) types.
+    http_method: Optional[str] = None
+
+    # Expected HTTP codes for a passing HTTP(S) Monitor. You can either specify
+    # a single status like "200", a range like "200-202", or a combination like
+    # "200-202, 401".
+    expected_codes: Optional[str] = None
+
+
+def _health_monitor_name(index: int, name: str) -> str:
+    return "{}-{}".format(name, index) if index > 0 else name
+
+
+def _health_monitor_create_opts(
+    lb_info: dict, req: HealthCheck, index: int, proto: str
+) -> HCOpts:
+    """
+    Create health monitor options from the given request.
+
+    Based loosely on the impl for Kubernetes Services of Loadbalancer type in openstack
+    https://github.com/kubernetes/cloud-provider-openstack/blob/a031201ff26f3df433192b91df2be0e7d50acb70/pkg/openstack/loadbalancer.go#L846
+
+    Args:
+        lb_info: The load balancer information dictionary.
+        req: The health check request from the loadbalancer-consumer relation.
+        index: The index of the health check in the list.
+        proto: The protocol of the load balancer pool.
+    """
+    provider = lb_info.get("provider") or ""
+    opts = HCOpts(
+        name=_health_monitor_name(index, lb_info["name"]),
+        type=proto.upper(),
+        delay=DEFAULT_HC_DELAY,
+        timeout=req.interval,
+        max_retries=req.retries,
+    )
+    if proto == "UDP":
+        opts.type = HC_TYPE.UDP_CONNECT.value
+    elif _can_use_http_monitor(req, provider):
+        # Can use HTTP(S) monitor
+        # if the path is in the request, use HTTP(S) monitor
+        if req.path:
+            opts.type = req.protocol.value.upper()
+            opts.url_path = req.path
+            opts.http_method = "GET"
+            opts.expected_codes = "200-499"  # accept any 2xx, 3xx, 4xx as healthy
+        else:
+            # No path provided, fallback to TLS-HELLO for HTTPS or HTTP
+            opts.type = HC_TYPE.TLS_HELLO.value
+    elif req.protocol.value.upper() in [HC_TYPE.HTTP.value, HC_TYPE.HTTPS.value]:
+        # Relation requests HTTP(s) but cannot use HTTP(S) monitor
+        # Fallback to TCP
+        opts.type = HC_TYPE.TCP.value
+
+    return opts
+
+
+def _can_use_http_monitor(req: HealthCheck, provider: str) -> bool:
+    if provider.upper() == "OVN":
+        # ovn-octavia-provider doesn't support HTTP monitors at all.
+        # We got to avoid creating it with ovn.
+        return False
+
+    return req.protocol.value.startswith("http")
 
 
 def update_credentials():
@@ -212,7 +332,13 @@ def _default_subnet(members, endpoint_name):
 
 
 def manage_loadbalancer(
-    app_name, members, lb_port, lb_algorithm, endpoint_name="lb-consumers"
+    app_name,
+    members,
+    lb_port,
+    lb_algorithm,
+    lb_proto: str,
+    lb_hc: Optional[HealthCheck] = None,
+    endpoint_name="lb-consumers",
 ):
     log("Managing load balancer for {}", app_name)
     config = hookenv.config()
@@ -220,7 +346,14 @@ def manage_loadbalancer(
     fip_net = config["lb-floating-network"]
     manage_secgrps = config["manage-security-groups"]
     lb_manager = LoadBalancer.get_or_create(
-        app_name, str(lb_port), subnet, lb_algorithm, fip_net, manage_secgrps
+        app_name,
+        str(lb_port),
+        subnet,
+        lb_algorithm,
+        lb_proto,
+        lb_hc,
+        fip_net,
+        manage_secgrps,
     )
     lb_manager.update_members([(addr, str(port)) for addr, port in members])
     return lb_manager
@@ -482,13 +615,15 @@ class LoadBalancer:
     octavia_available = None
 
     @classmethod
-    def get_or_create(cls, app_name, port, subnet, algorithm, fip_net, manage_secgrps):
+    def get_or_create(
+        cls, app_name, port, subnet, algorithm, proto, hc, fip_net, manage_secgrps
+    ):
         """
         Create a client instance for the given LB.
 
         Returns the proper subclass depending on whether Octavia is available.
         """
-        lb = cls(app_name, port, subnet, algorithm, fip_net, manage_secgrps)
+        lb = cls(app_name, port, subnet, algorithm, proto, hc, fip_net, manage_secgrps)
         if not lb.is_created:
             try:
                 lb.create()
@@ -507,15 +642,21 @@ class LoadBalancer:
             cached_info["port"],
             cached_info["subnet"],
             cached_info["algorithm"],
+            cached_info.get("proto") or DEFAULT_PROTOCOL,
+            None,
             cached_info["fip_net"],
             cached_info["manage_secgrps"],
         )
 
-    def __init__(self, app_name, port, subnet, algorithm, fip_net, manage_secgrps):
+    def __init__(
+        self, app_name, port, subnet, algorithm, proto, hc, fip_net, manage_secgrps
+    ):
         self.app_name = app_name
         self.port = port
         self.subnet = subnet
         self.algorithm = algorithm
+        self.proto = proto
+        self.hc = hc or DEFAULT_HC_REQ
         self.fip_net = fip_net
         self.manage_secgrps = manage_secgrps
         self.sg_id = None
@@ -555,6 +696,7 @@ class LoadBalancer:
                 self.port,
                 self.subnet,
                 self.algorithm,
+                self.proto,
                 self.fip_net,
                 self.manage_secgrps,
             )
@@ -564,6 +706,7 @@ class LoadBalancer:
                 self.port,
                 self.subnet,
                 self.algorithm,
+                self.proto,
                 self.fip_net,
                 self.manage_secgrps,
             )
@@ -674,7 +817,7 @@ class LoadBalancer:
         if lb_healthmonitor_info:
             log("Found loadbalancer healthmonitor: {}", lb_healthmonitor_info)
         else:
-            lb_healthmonitor_info = self._impl.create_healthmonitor()
+            lb_healthmonitor_info = self._impl.create_healthmonitor(self.hc, 0)
             # check if created; some backends don't support it
             if lb_healthmonitor_info:
                 log(
@@ -688,9 +831,10 @@ class LoadBalancer:
 
     def _wait_not_pending(self, show_func):
         lb_status = None
-        for retry in range(30):
+        for _ in range(30):
             lb_status = show_func()["provisioning_status"]
             if not lb_status.startswith("PENDING_"):
+                log("Load balancer {} is not PENDING_ status: {}", self.name, lb_status)
                 break
             sleep(2)
 
@@ -812,6 +956,11 @@ class LoadBalancer:
             self.fip = info["fip"]
             self.address = info["address"]
             self.members = {tuple(m) for m in info["members"]}
+            # handle upgrade from before protocol was cached
+            # This supports the case where prior LBs were created
+            # with HTTPS as the protocol even if the requested protocol
+            # was UDP or TCP.
+            self.proto = info.get("proto") or DEFAULT_PROTOCOL
             self.member_sg_id = info.get("member_sg_id")
             if self.member_sg_id is None and self.is_port_sec_enabled:
                 # handle upgrade from before the member SG was handled
@@ -828,6 +977,7 @@ class LoadBalancer:
                 "port": self.port,
                 "subnet": self.subnet,
                 "algorithm": self.algorithm,
+                "proto": self.proto,
                 "fip_net": self.fip_net,
                 "manage_secgrps": self.manage_secgrps,
                 "sg_id": self.sg_id,
@@ -842,11 +992,12 @@ class LoadBalancer:
 
 
 class BaseLBImpl:
-    def __init__(self, name, port, subnet, algorithm, fip_net, manage_secgrps):
+    def __init__(self, name, port, subnet, algorithm, proto, fip_net, manage_secgrps):
         self.name = name
         self.port = port
         self.subnet = subnet
         self.algorithm = algorithm
+        self.proto = proto
         self.fip_net = fip_net
         self.manage_secgrps = manage_secgrps
 
@@ -971,7 +1122,7 @@ class BaseLBImpl:
     def delete_member(self, member):
         raise NotImplementedError()
 
-    def create_healthmonitor(self):
+    def create_healthmonitor(self, req: HealthCheck, index: int):
         raise NotImplementedError()
 
     def list_healthmonitors(self) -> list:
@@ -1013,7 +1164,7 @@ class OctaviaLBImpl(BaseLBImpl):
             "--name",
             self.name,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
             "--protocol-port",
             self.port,
             self.name,
@@ -1040,7 +1191,7 @@ class OctaviaLBImpl(BaseLBImpl):
             "--lb-algorithm",
             self.algorithm,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
         )
 
     def delete_pool(self):
@@ -1078,28 +1229,40 @@ class OctaviaLBImpl(BaseLBImpl):
             "loadbalancer", "member", "delete", self.name, addr, yaml_output=False
         )
 
-    def create_healthmonitor(self):
+    def create_healthmonitor(self, req: HealthCheck, index: int):
         """
-        Create an opinionated health monitor
-        designed to monitor the kubernetes master service.
+        Create a health monitor based on the LB requested from the relation.
         Don't need a 'delete_healthmonitor',
         because this will be cleaned up by openstack automatically on lb deletion.
         """
+        lb_info = self.show_loadbalancer()
+        opts = _health_monitor_create_opts(lb_info, req, index, self.proto)
+
+        build_args = [
+            "--delay",
+            str(opts.delay),
+            "--max-retries",
+            str(opts.max_retries),
+            "--timeout",
+            str(opts.timeout),
+            "--type",
+            opts.type,
+        ]
+        if path := opts.url_path:
+            build_args.extend(["--url-path", path])
+        if http_method := opts.http_method:
+            build_args.extend(["--http-method", http_method])
+        if expected_codes := opts.expected_codes:
+            build_args.extend(["--expected-codes", expected_codes])
+
         return _openstack(
             "loadbalancer",
             "healthmonitor",
             "create",
-            "--delay",
-            "5",
-            "--max-retries",
-            "4",
-            "--timeout",
-            "10",
-            "--type",
-            "TLS-HELLO",
+            *build_args,
             "--name",
-            self.name,
-            self.name,
+            opts.name,
+            self.name,  # name of the pool
         )
 
     def list_healthmonitors(self) -> list:
@@ -1144,7 +1307,7 @@ class NeutronLBImpl(BaseLBImpl):
             "--name",
             self.name,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
             "--protocol-port",
             self.port,
             "--loadbalancer",
@@ -1170,7 +1333,7 @@ class NeutronLBImpl(BaseLBImpl):
             "--lb-algorithm",
             self.algorithm,
             "--protocol",
-            "HTTPS",
+            self.proto.upper(),
         )
 
     def delete_pool(self):
@@ -1203,7 +1366,7 @@ class NeutronLBImpl(BaseLBImpl):
         addr, _ = member
         _neutron("lbaas-member-delete", addr, self.name)
 
-    def create_healthmonitor(self):
+    def create_healthmonitor(self, req: HealthCheck, index: int):
         """not implemented for neutron"""
         return
 
