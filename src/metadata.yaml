@@ -15,10 +15,13 @@ tags: ['openstack', 'native', 'integration']
 provides:
   clients:
     interface: openstack-integration
+    optional: true
   credentials:
     interface: keystone-credentials
+    optional: true
   loadbalancer:
     interface: public-address
+    optional: true
     # Use of this relation is strongly discouraged in favor of the more
     # explicit lb-consumers relation.
   lb-consumers:
