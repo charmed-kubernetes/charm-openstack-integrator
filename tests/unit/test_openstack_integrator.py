@@ -240,7 +240,65 @@ def test_run_with_creds(_load_creds):
     assert env["OS_CACERT"] == str(openstack.CA_CERT_FILE)
     assert "OS_IDENTITY_API_VERSION" not in env
 
-    openstack.CA_CERT_FILE.unlink()
+
+def test_run_with_creds_custom_endpoint_timeout(_load_creds):
+    openstack.hookenv.config.return_value = {
+        "web-proxy-enable": True,
+        "endpoint-timeout": 12.5,
+    }
+    _load_creds.return_value = {
+        "auth_url": "auth_url",
+        "region": "region",
+        "username": "username",
+        "password": "password",
+        "application_credential_id": "",
+        "application_credential_name": "",
+        "application_credential_secret": "",
+        "auth_type": "",
+        "user_domain_name": "user_domain_name",
+        "project_domain_name": "project_domain_name",
+        "project_id": "project_id",
+        "project_name": "project_name",
+        "endpoint_tls_ca": None,
+        "version": "3",
+    }
+
+    with mock.patch.dict(os.environ, {"PATH": "path"}):
+        openstack._run_with_creds("my", "args")
+
+    assert subprocess.run.call_args[1]["timeout"] == 12.5
+
+
+def test_run_with_creds_invalid_endpoint_timeout_uses_default(_load_creds, log_err):
+    openstack.hookenv.config.return_value = {
+        "web-proxy-enable": True,
+        "endpoint-timeout": "not-a-number",
+    }
+    _load_creds.return_value = {
+        "auth_url": "auth_url",
+        "region": "region",
+        "username": "username",
+        "password": "password",
+        "application_credential_id": "",
+        "application_credential_name": "",
+        "application_credential_secret": "",
+        "auth_type": "",
+        "user_domain_name": "user_domain_name",
+        "project_domain_name": "project_domain_name",
+        "project_id": "project_id",
+        "project_name": "project_name",
+        "endpoint_tls_ca": None,
+        "version": "3",
+    }
+
+    with mock.patch.dict(os.environ, {"PATH": "path"}):
+        openstack._run_with_creds("my", "args")
+
+    assert subprocess.run.call_args[1]["timeout"] == openstack.DEFAULT_ENDPOINT_TIMEOUT
+    assert log_err.call_count >= 1
+
+    if openstack.CA_CERT_FILE.exists():
+        openstack.CA_CERT_FILE.unlink()
     _load_creds.return_value["version"] = None
     openstack._run_with_creds("my", "args")
     env = subprocess.run.call_args[1]["env"]

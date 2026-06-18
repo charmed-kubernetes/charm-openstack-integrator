@@ -29,7 +29,7 @@ from charmhelpers.core.unitdata import kv
 from charms.layer import status
 
 CACHED_LB_PREFIX = "created_lbs"
-ENDPOINT_TIMEOUT = 30.0  # seconds
+DEFAULT_ENDPOINT_TIMEOUT = 30.0  # seconds
 DEFAULT_PROTOCOL = "HTTPS"
 DEFAULT_HC_DELAY = 5
 
@@ -70,6 +70,29 @@ def log(msg, *args):
 
 def log_err(msg, *args):
     hookenv.log(msg.format(*args), hookenv.ERROR)
+
+
+def _endpoint_timeout() -> float:
+    raw_timeout = hookenv.config().get("endpoint-timeout", DEFAULT_ENDPOINT_TIMEOUT)
+    try:
+        timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        log_err(
+            "Invalid endpoint-timeout value {!r}; using default {}",
+            raw_timeout,
+            DEFAULT_ENDPOINT_TIMEOUT,
+        )
+        return DEFAULT_ENDPOINT_TIMEOUT
+
+    if timeout <= 0:
+        log_err(
+            "Invalid endpoint-timeout value {!r}; must be > 0, using default {}",
+            raw_timeout,
+            DEFAULT_ENDPOINT_TIMEOUT,
+        )
+        return DEFAULT_ENDPOINT_TIMEOUT
+
+    return timeout
 
 
 @dataclasses.dataclass
@@ -568,13 +591,29 @@ def _run_with_creds(*args):
     env = {
         "PATH": os.pathsep.join(["/snap/bin", os.environ["PATH"]]),
         "OS_AUTH_URL": creds["auth_url"],
-        "OS_USERNAME": creds["username"],
-        "OS_PASSWORD": creds["password"],
         "OS_REGION_NAME": creds["region"],
-        "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
-        "OS_PROJECT_NAME": creds["project_name"],
-        "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
     }
+
+    if creds.get("application_credential_secret") and (
+        creds.get("application_credential_id")
+        or creds.get("application_credential_name")
+    ):
+        env["OS_AUTH_TYPE"] = "v3applicationcredential"
+        env["OS_APPLICATION_CREDENTIAL_SECRET"] = creds["application_credential_secret"]
+        if creds.get("application_credential_id"):
+            env["OS_APPLICATION_CREDENTIAL_ID"] = creds["application_credential_id"]
+        if creds.get("application_credential_name"):
+            env["OS_APPLICATION_CREDENTIAL_NAME"] = creds["application_credential_name"]
+    else:
+        env.update(
+            {
+                "OS_USERNAME": creds["username"],
+                "OS_PASSWORD": creds["password"],
+                "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
+                "OS_PROJECT_NAME": creds["project_name"],
+                "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
+            }
+        )
 
     _cred_to_o7k_env = {
         "domain_id": "OS_DOMAIN_ID",
@@ -602,7 +641,7 @@ def _run_with_creds(*args):
             env=proxy_env,
             check=True,
             stdout=subprocess.PIPE,
-            timeout=ENDPOINT_TIMEOUT,
+            timeout=_endpoint_timeout(),
         )
     return result.stdout.decode("utf8")
 
@@ -646,7 +685,9 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
     with _ca_cert_temp(endpoint_tls_ca) as ca_file:
         try:
             with openstack_proxied(os.environ):
-                with urlopen(endpoint, cafile=ca_file, timeout=ENDPOINT_TIMEOUT) as fp:
+                with urlopen(
+                    endpoint, cafile=ca_file, timeout=_endpoint_timeout()
+                ) as fp:
                     info = json.loads(fp.read(600).decode("utf8"))
                     version = str(info["version"]["id"]).split(".")[0].lstrip("v")
         except (

@@ -288,6 +288,12 @@ options:
       proxied using juju's model-config juju-*-proxy settings.
       (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
     default: false
+  endpoint-timeout:
+    type: float
+    description: |
+      Timeout in seconds used by OpenStack CLI calls and endpoint version
+      discovery requests.
+    default: 30.0
   openstackclients-snap-channel:
     type: string
     description: |
