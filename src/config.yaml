@@ -3,8 +3,13 @@ options:
     description: |
       The base64-encoded contents of a JSON file containing OpenStack credentials.
 
-      The credentials must contain the following keys: auth-url, region, username,
-      password, project-name, user-domain-name, and project-domain-name.
+      For username/password auth, the credentials must contain the following keys:
+      auth-url, region, username, password, project-name, user-domain-name,
+      and project-domain-name.
+
+      For application credential auth, the credentials must contain auth-url,
+      region, application-credential-secret, and either
+      application-credential-id or application-credential-name.
 
       It could also contain a base64-encoded CA certificate in endpoint-tls-ca key value.
 
@@ -27,6 +32,18 @@ options:
     default: ""
   password:
     description: Password of a valid user set in keystone.
+    type: string
+    default: ""
+  application-credential-id:
+    description: ID of an OpenStack application credential.
+    type: string
+    default: ""
+  application-credential-name:
+    description: Name of an OpenStack application credential.
+    type: string
+    default: ""
+  application-credential-secret:
+    description: Secret for an OpenStack application credential.
     type: string
     default: ""
   domain-id:
