@@ -255,6 +255,43 @@ def test_lb_secgroup_valid(value, expected):
     assert charm.lb_manage_security_groups(config) is expected
 
 
+def test_parse_additional_cloud_conf_options_empty():
+    parsed, err = charm._parse_additional_cloud_conf_options(
+        {"additional-cloud-conf-options": ""}
+    )
+    assert parsed is None
+    assert err is None
+
+
+def test_parse_additional_cloud_conf_options_valid():
+    parsed, err = charm._parse_additional_cloud_conf_options(
+        {
+            "additional-cloud-conf-options": (
+                '{"LoadBalancer":{"availability-zone":"AG1"}}'
+            )
+        }
+    )
+    assert err is None
+    assert parsed == {"LoadBalancer": {"availability-zone": "AG1"}}
+
+
+@pytest.mark.parametrize(
+    "value,error_fragment",
+    [
+        ("{", "Invalid JSON"),
+        ("[]", "expected a JSON object"),
+        ('{"LoadBalancer":"x"}', "section values must be JSON objects"),
+        ('{"LoadBalancer":{"":"x"}}', "option names must be non-empty strings"),
+    ],
+)
+def test_parse_additional_cloud_conf_options_invalid(value, error_fragment):
+    parsed, err = charm._parse_additional_cloud_conf_options(
+        {"additional-cloud-conf-options": value}
+    )
+    assert parsed is None
+    assert error_fragment in err
+
+
 def test_validate_loadbalancer_request_no_errors():
     request = mock.MagicMock()
     request.protocol.value = "tcp"
