@@ -94,6 +94,10 @@ options:
     description: |
       Whether or not to enable the LoadBalancer type of Services integration.
       Enabled by default.
+      NOTE: Multi-unit HA for **charm-managed** loadbalancer juju endpoint operations
+      is not fully implemented yet; additional work is required before
+      enabling this with active/standby failover expectations.
+      This HA issue is not related to the k8s services using OCCM
     type: boolean
     default: true
   lb-subnet:
