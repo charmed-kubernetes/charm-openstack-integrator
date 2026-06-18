@@ -192,3 +192,11 @@ options:
       proxied using juju's model-config juju-*-proxy settings.
       (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
     default: false
+  openstackclients-snap-channel:
+    type: string
+    description: |
+      Snap channel to use for the openstackclients snap.
+
+      Set this to a channel such as latest/stable to override the default
+      channel used when refreshing the snap.
+    default: stable
