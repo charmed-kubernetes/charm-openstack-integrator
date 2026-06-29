@@ -175,3 +175,11 @@ options:
       proxied using juju's model-config juju-*-proxy settings.
       (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
     default: false
+  lb-provider:
+    description: |
+      Octavia provider driver (e.g. "amphora" or "ovn") to use when this
+      charm creates load balancers for other charms related on the
+      loadbalancer endpoint. If unset, the cloud's default provider is used.
+    type: string
+    default: ""
+
