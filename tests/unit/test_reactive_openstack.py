@@ -68,6 +68,179 @@ def test_analyze_proxy_unmatched_settings(set_flag, layer, endpoint_from_name):
     set_flag.assert_any_call("charm.openstack.proxy.set")
 
 
+@mock.patch("reactive.openstack.subprocess.run")
+@mock.patch("reactive.openstack.layer")
+@mock.patch("reactive.openstack.set_flag")
+def test_ensure_openstackclients_snap(set_flag, layer, run):
+    hookenv.config.return_value = {"openstackclients-snap-channel": "latest/stable"}
+    run.side_effect = [
+        mock.Mock(returncode=1, stdout="", stderr=""),
+        mock.Mock(
+            returncode=0,
+            stdout=(
+                "Name            Version  Rev  Tracking       Publisher  Notes\n"
+                "openstackclients 6.5      12   latest/stable  canonical* -"
+            ),
+            stderr="",
+        ),
+        mock.Mock(returncode=0, stdout="", stderr=""),
+    ]
+
+    charm.ensure_openstackclients_snap()
+
+    layer.status.maintenance.assert_called_once_with(
+        "Refreshing openstackclients snap to latest/stable"
+    )
+    assert run.call_count == 3
+    run.assert_any_call(
+        ("snap", "list", "openstackclients"),
+        check=False,
+        stdout=mock.ANY,
+        stderr=mock.ANY,
+        text=True,
+    )
+    run.assert_any_call(
+        (
+            "snap",
+            "refresh",
+            "openstackclients",
+            "--channel",
+            "latest/stable",
+        ),
+        check=True,
+        stdout=mock.ANY,
+        stderr=mock.ANY,
+    )
+    set_flag.assert_called_once_with(charm.OPENSTACKCLIENTS_READY_FLAG)
+
+
+@mock.patch("reactive.openstack.subprocess.run")
+@mock.patch("reactive.openstack.layer")
+@mock.patch("reactive.openstack.set_flag")
+def test_ensure_openstackclients_snap_with_default(set_flag, layer, run):
+    hookenv.config.return_value = {"openstackclients-snap-channel": "stable"}
+    run.return_value = mock.Mock(
+        returncode=0,
+        stdout=(
+            "Name            Version  Rev  Tracking       Publisher  Notes\n"
+            "openstackclients 6.5      12   latest/stable  canonical* -"
+        ),
+        stderr="",
+    )
+
+    charm.ensure_openstackclients_snap()
+
+    layer.status.maintenance.assert_not_called()
+    run.assert_called_once_with(
+        ("snap", "list", "openstackclients"),
+        check=False,
+        stdout=mock.ANY,
+        stderr=mock.ANY,
+        text=True,
+    )
+    set_flag.assert_called_once_with(charm.OPENSTACKCLIENTS_READY_FLAG)
+
+
+@mock.patch("reactive.openstack.subprocess.run")
+@mock.patch("reactive.openstack.layer")
+def test_refresh_openstackclients_snap_channel_noop_for_default(layer, run):
+    hookenv.config.return_value = {"openstackclients-snap-channel": "stable"}
+    run.return_value = mock.Mock(
+        returncode=0,
+        stdout=(
+            "Name            Version  Rev  Tracking       Publisher  Notes\n"
+            "openstackclients 6.5      12   latest/stable  canonical* -"
+        ),
+        stderr="",
+    )
+
+    charm.refresh_openstackclients_snap_channel()
+
+    layer.status.maintenance.assert_not_called()
+    run.assert_called_once_with(
+        ("snap", "list", "openstackclients"),
+        check=False,
+        stdout=mock.ANY,
+        stderr=mock.ANY,
+        text=True,
+    )
+
+
+@mock.patch("reactive.openstack.subprocess.run")
+@mock.patch("reactive.openstack.layer")
+def test_refresh_openstackclients_snap_channel(layer, run):
+    hookenv.config.return_value = {"openstackclients-snap-channel": "latest/stable"}
+    run.side_effect = [
+        mock.Mock(
+            returncode=0,
+            stdout=(
+                "Name            Version  Rev  Tracking       Publisher  Notes\n"
+                "openstackclients 6.5      12   latest/candidate  canonical* -"
+            ),
+            stderr="",
+        ),
+        mock.Mock(returncode=0, stdout="", stderr=""),
+    ]
+
+    charm.refresh_openstackclients_snap_channel()
+
+    layer.status.maintenance.assert_called_once_with(
+        "Refreshing openstackclients snap to latest/stable"
+    )
+    assert run.call_count == 2
+    run.assert_any_call(
+        ("snap", "list", "openstackclients"),
+        check=False,
+        stdout=mock.ANY,
+        stderr=mock.ANY,
+        text=True,
+    )
+    run.assert_any_call(
+        ("snap", "refresh", "openstackclients", "--channel", "latest/stable"),
+        check=True,
+        stdout=mock.ANY,
+        stderr=mock.ANY,
+    )
+
+
+@mock.patch("reactive.openstack.hookenv.application_version_set")
+@mock.patch("reactive.openstack.hookenv.config")
+@mock.patch("reactive.openstack.subprocess.run")
+def test_set_app_ver_when_channel_matches(run, config, application_version_set):
+    config.return_value = {"openstackclients-snap-channel": "stable"}
+    run.return_value = mock.Mock(
+        returncode=0,
+        stdout=(
+            "Name            Version  Rev  Tracking       Publisher  Notes\n"
+            "openstackclients 6.5      12   latest/stable  canonical* -"
+        ),
+        stderr="",
+    )
+
+    charm.set_app_ver()
+
+    application_version_set.assert_called_once_with("6.5")
+
+
+@mock.patch("reactive.openstack.hookenv.application_version_set")
+@mock.patch("reactive.openstack.hookenv.config")
+@mock.patch("reactive.openstack.subprocess.run")
+def test_set_app_ver_skips_when_channel_mismatch(run, config, application_version_set):
+    config.return_value = {"openstackclients-snap-channel": "latest/stable"}
+    run.return_value = mock.Mock(
+        returncode=0,
+        stdout=(
+            "Name            Version  Rev  Tracking       Publisher  Notes\n"
+            "openstackclients 6.5      12   latest/candidate  canonical* -"
+        ),
+        stderr="",
+    )
+
+    charm.set_app_ver()
+
+    application_version_set.assert_not_called()
+
+
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -80,6 +253,43 @@ def test_analyze_proxy_unmatched_settings(set_flag, layer, endpoint_from_name):
 def test_lb_secgroup_valid(value, expected):
     config = {"manage-security-groups": value}
     assert charm.lb_manage_security_groups(config) is expected
+
+
+def test_parse_additional_cloud_conf_options_empty():
+    parsed, err = charm._parse_additional_cloud_conf_options(
+        {"additional-cloud-conf-options": ""}
+    )
+    assert parsed is None
+    assert err is None
+
+
+def test_parse_additional_cloud_conf_options_valid():
+    parsed, err = charm._parse_additional_cloud_conf_options(
+        {
+            "additional-cloud-conf-options": (
+                '{"LoadBalancer":{"availability-zone":"AG1"}}'
+            )
+        }
+    )
+    assert err is None
+    assert parsed == {"LoadBalancer": {"availability-zone": "AG1"}}
+
+
+@pytest.mark.parametrize(
+    "value,error_fragment",
+    [
+        ("{", "Invalid JSON"),
+        ("[]", "expected a JSON object"),
+        ('{"LoadBalancer":"x"}', "section values must be JSON objects"),
+        ('{"LoadBalancer":{"":"x"}}', "option names must be non-empty strings"),
+    ],
+)
+def test_parse_additional_cloud_conf_options_invalid(value, error_fragment):
+    parsed, err = charm._parse_additional_cloud_conf_options(
+        {"additional-cloud-conf-options": value}
+    )
+    assert parsed is None
+    assert error_fragment in err
 
 
 def test_validate_loadbalancer_request_no_errors():

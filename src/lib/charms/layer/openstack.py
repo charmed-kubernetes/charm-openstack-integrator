@@ -29,7 +29,7 @@ from charmhelpers.core.unitdata import kv
 from charms.layer import status
 
 CACHED_LB_PREFIX = "created_lbs"
-ENDPOINT_TIMEOUT = 30.0  # seconds
+DEFAULT_ENDPOINT_TIMEOUT = 30.0  # seconds
 DEFAULT_PROTOCOL = "HTTPS"
 DEFAULT_HC_DELAY = 5
 
@@ -70,6 +70,29 @@ def log(msg, *args):
 
 def log_err(msg, *args):
     hookenv.log(msg.format(*args), hookenv.ERROR)
+
+
+def _endpoint_timeout() -> float:
+    raw_timeout = hookenv.config().get("endpoint-timeout", DEFAULT_ENDPOINT_TIMEOUT)
+    try:
+        timeout = float(raw_timeout)
+    except (TypeError, ValueError):
+        log_err(
+            "Invalid endpoint-timeout value {!r}; using default {}",
+            raw_timeout,
+            DEFAULT_ENDPOINT_TIMEOUT,
+        )
+        return DEFAULT_ENDPOINT_TIMEOUT
+
+    if timeout <= 0:
+        log_err(
+            "Invalid endpoint-timeout value {!r}; must be > 0, using default {}",
+            raw_timeout,
+            DEFAULT_ENDPOINT_TIMEOUT,
+        )
+        return DEFAULT_ENDPOINT_TIMEOUT
+
+    return timeout
 
 
 @dataclasses.dataclass
@@ -175,7 +198,7 @@ def update_credentials():
     """
     config = hookenv.config()
 
-    required_fields = [
+    userpass_required_fields = [
         "auth_url",
         "region",
         "username",
@@ -184,6 +207,15 @@ def update_credentials():
         "project_domain_name",
         "project_name",
     ]
+    appcred_required_fields = [
+        "auth_url",
+        "region",
+        "application_credential_secret",
+    ]
+    appcred_id_fields = [
+        "application_credential_id",
+        "application_credential_name",
+    ]
     optional_fields = [
         "project_id",
         "endpoint_tls_ca",
@@ -191,9 +223,18 @@ def update_credentials():
         "domain_name",
         "user_domain_id",
         "project_domain_id",
+        "application_credential_id",
+        "application_credential_name",
+        "auth_type",
     ]
     # pre-populate with empty values to avoid key and arg errors
-    creds_data = {field: "" for field in required_fields + optional_fields}
+    all_fields = (
+        userpass_required_fields
+        + appcred_required_fields
+        + appcred_id_fields
+        + optional_fields
+    )
+    creds_data = {field: "" for field in all_fields}
 
     try:
         # try to use Juju's trust feature
@@ -243,10 +284,57 @@ def update_credentials():
             status.blocked(str(e))
             return False
 
+    use_app_creds = (
+        creds_data["auth_type"] == "v3applicationcredential"
+        or creds_data["application_credential_secret"]
+        or any(creds_data[k] for k in appcred_id_fields)
+    )
+
+    # Prevent ambiguous mixed-mode config: a single credential set should use
+    # either userpass fields or application credential fields, not both.
+    userpass_mode_fields = [
+        "username",
+        "password",
+        "user_domain_name",
+        "project_domain_name",
+        "project_name",
+    ]
+    appcred_mode_fields = [
+        "application_credential_secret",
+        "application_credential_id",
+        "application_credential_name",
+    ]
+    if any(creds_data[k] for k in userpass_mode_fields) and any(
+        creds_data[k] for k in appcred_mode_fields
+    ):
+        msg = (
+            "invalid credentials: do not mix userpass and application "
+            "credential options"
+        )
+        log_err(msg)
+        status.blocked(msg)
+        return False
+
+    if use_app_creds:
+        required_fields = appcred_required_fields
+        missing = [k for k in required_fields if not creds_data[k]]
+        if not any(creds_data[k] for k in appcred_id_fields):
+            missing.append("application_credential_id or application_credential_name")
+        if missing:
+            s = "s" if len(missing) > 1 else ""
+            msg = "missing required credential{}: {}".format(s, ", ".join(missing))
+            log_err(msg)
+            status.blocked(msg)
+            return False
+    else:
+        required_fields = userpass_required_fields
+
     if all(creds_data[k] for k in required_fields):
         _save_creds(creds_data)
         return True
-    elif not any(creds_data[k] for k in required_fields):
+    elif not any(
+        creds_data[k] for k in userpass_required_fields + appcred_required_fields
+    ):
         # no creds provided
         status.blocked(
             "missing credentials; " "grant with `juju trust` or set via config"
@@ -393,9 +481,10 @@ def _normalize_creds(creds_data):
         endpoint = attrs.get("auth-url", "")
         region = attrs.get("region", "")
 
-    if attrs.get("auth-type") not in ("userpass", None):
+    auth_type = attrs.get("auth-type")
+    if auth_type not in ("userpass", "v3password", "v3applicationcredential", None):
         raise ValueError(
-            "unsupported auth-type in credentials: " "{}".format(attrs.get("auth-type"))
+            "unsupported auth-type in credentials: " "{}".format(auth_type)
         )
 
     ca_cert = None
@@ -428,6 +517,10 @@ def _normalize_creds(creds_data):
         region=region,
         username=attrs.get("username"),
         password=attrs.get("password"),
+        application_credential_id=attrs.get("application-credential-id"),
+        application_credential_name=attrs.get("application-credential-name"),
+        application_credential_secret=attrs.get("application-credential-secret"),
+        auth_type=auth_type,
         user_domain_name=attrs.get("user-domain-name"),
         user_domain_id=attrs.get("user-domain-id"),
         domain_name=attrs.get("domain-name"),
@@ -498,13 +591,29 @@ def _run_with_creds(*args):
     env = {
         "PATH": os.pathsep.join(["/snap/bin", os.environ["PATH"]]),
         "OS_AUTH_URL": creds["auth_url"],
-        "OS_USERNAME": creds["username"],
-        "OS_PASSWORD": creds["password"],
         "OS_REGION_NAME": creds["region"],
-        "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
-        "OS_PROJECT_NAME": creds["project_name"],
-        "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
     }
+
+    if creds.get("application_credential_secret") and (
+        creds.get("application_credential_id")
+        or creds.get("application_credential_name")
+    ):
+        env["OS_AUTH_TYPE"] = "v3applicationcredential"
+        env["OS_APPLICATION_CREDENTIAL_SECRET"] = creds["application_credential_secret"]
+        if creds.get("application_credential_id"):
+            env["OS_APPLICATION_CREDENTIAL_ID"] = creds["application_credential_id"]
+        if creds.get("application_credential_name"):
+            env["OS_APPLICATION_CREDENTIAL_NAME"] = creds["application_credential_name"]
+    else:
+        env.update(
+            {
+                "OS_USERNAME": creds["username"],
+                "OS_PASSWORD": creds["password"],
+                "OS_USER_DOMAIN_NAME": creds["user_domain_name"],
+                "OS_PROJECT_NAME": creds["project_name"],
+                "OS_PROJECT_DOMAIN_NAME": creds["project_domain_name"],
+            }
+        )
 
     _cred_to_o7k_env = {
         "domain_id": "OS_DOMAIN_ID",
@@ -532,7 +641,7 @@ def _run_with_creds(*args):
             env=proxy_env,
             check=True,
             stdout=subprocess.PIPE,
-            timeout=ENDPOINT_TIMEOUT,
+            timeout=_endpoint_timeout(),
         )
     return result.stdout.decode("utf8")
 
@@ -576,7 +685,9 @@ def _determine_version(attrs, endpoint, endpoint_tls_ca):
     with _ca_cert_temp(endpoint_tls_ca) as ca_file:
         try:
             with openstack_proxied(os.environ):
-                with urlopen(endpoint, cafile=ca_file, timeout=ENDPOINT_TIMEOUT) as fp:
+                with urlopen(
+                    endpoint, cafile=ca_file, timeout=_endpoint_timeout()
+                ) as fp:
                     info = json.loads(fp.read(600).decode("utf8"))
                     version = str(info["version"]["id"]).split(".")[0].lstrip("v")
         except (

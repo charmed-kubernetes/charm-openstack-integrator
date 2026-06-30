@@ -3,8 +3,13 @@ options:
     description: |
       The base64-encoded contents of a JSON file containing OpenStack credentials.
 
-      The credentials must contain the following keys: auth-url, region, username,
-      password, project-name, user-domain-name, and project-domain-name.
+      For username/password auth, the credentials must contain the following keys:
+      auth-url, region, username, password, project-name, user-domain-name,
+      and project-domain-name.
+
+      For application credential auth, the credentials must contain auth-url,
+      region, application-credential-secret, and either
+      application-credential-id or application-credential-name.
 
       It could also contain a base64-encoded CA certificate in endpoint-tls-ca key value.
 
@@ -27,6 +32,18 @@ options:
     default: ""
   password:
     description: Password of a valid user set in keystone.
+    type: string
+    default: ""
+  application-credential-id:
+    description: ID of an OpenStack application credential.
+    type: string
+    default: ""
+  application-credential-name:
+    description: Name of an OpenStack application credential.
+    type: string
+    default: ""
+  application-credential-secret:
+    description: Secret for an OpenStack application credential.
     type: string
     default: ""
   domain-id:
@@ -77,6 +94,10 @@ options:
     description: |
       Whether or not to enable the LoadBalancer type of Services integration.
       Enabled by default.
+      NOTE: Multi-unit HA for **charm-managed** loadbalancer juju endpoint operations
+      is not fully implemented yet; additional work is required before
+      enabling this with active/standby failover expectations.
+      This HA issue is not related to the k8s services using OCCM
     type: boolean
     default: true
   lb-subnet:
@@ -168,6 +189,98 @@ options:
       (no floating IP) by default.
     type: boolean
     default: false
+  use-octavia:
+    description: |
+      Whether to force Octavia usage for integrated workloads.
+
+      Set to auto (default) to let the charm detect support automatically.
+      Set to true or false to explicitly override automatic detection.
+    type: string
+    default: auto
+  member-subnet-id:
+    description: |
+      If set, it will be passed to integrated workloads to indicate in what
+      subnet load balancer members should be created.
+    type: string
+    default: ""
+  create-monitor:
+    description: |
+      Whether to create health monitors for load balancers managed by
+      integrated workloads.
+    type: boolean
+    default: null
+  monitor-delay:
+    description: |
+      Delay between health monitor checks (for example, 1m).
+    type: string
+    default: ""
+  monitor-timeout:
+    description: |
+      Timeout for health monitor checks (for example, 30s).
+    type: string
+    default: ""
+  monitor-max-retries:
+    description: |
+      Maximum health monitor retries before considering a member down.
+    type: int
+    default: null
+  node-selector:
+    description: |
+      Node selector value for the [LoadBalancer] node-selector option in
+      cloud.conf consumed by integrated workloads.
+      This value is passed through as-is to cloud.conf.
+    type: string
+    default: ""
+  internal-network-name:
+    description: |
+      Internal network name to pass to integrated workloads where supported.
+    type: string
+    default: ""
+  public-network-name:
+    description: |
+      Public network name to pass to integrated workloads where supported.
+    type: string
+    default: ""
+  lb-flavor-id:
+    description: |
+      Load balancer flavor ID to pass to integrated workloads where supported.
+    type: string
+    default: ""
+  key-id:
+    description: |
+      Barbican key ID to pass to integrated workloads where supported.
+    type: string
+    default: ""
+  additional-cloud-conf-options:
+    description: |
+      Additional options to merge directly into cloud.conf for integrated
+      workloads.
+
+      The value must be a JSON object where keys are cloud.conf section names
+      and values are JSON objects mapping option names to values.
+
+      Example:
+      '{"LoadBalancer":{"availability-zone":"AG1"}}'
+    type: string
+    default: ""
+  verify-ssl:
+    description: |
+      Whether to verify OpenStack endpoint TLS certificates in integrated
+      workloads that consume cloud.conf.
+    type: boolean
+    default: null
+  tls-insecure:
+    description: |
+      Whether TLS verification should be skipped for integrated workloads that
+      consume cloud.conf.
+    type: boolean
+    default: null
+  verify:
+    description: |
+      Generic verify flag to pass through to integrated workloads that consume
+      cloud.conf.
+    type: boolean
+    default: null
   web-proxy-enable:
     type: boolean
     description: |
@@ -175,3 +288,17 @@ options:
       proxied using juju's model-config juju-*-proxy settings.
       (See https://documentation.ubuntu.com/juju/latest/reference/juju-cli/list-of-juju-cli-commands/model-config/).
     default: false
+  endpoint-timeout:
+    type: float
+    description: |
+      Timeout in seconds used by OpenStack CLI calls and endpoint version
+      discovery requests.
+    default: 30.0
+  openstackclients-snap-channel:
+    type: string
+    description: |
+      Snap channel to use for the openstackclients snap.
+
+      Set this to a channel such as latest/stable to override the default
+      channel used when refreshing the snap.
+    default: stable
