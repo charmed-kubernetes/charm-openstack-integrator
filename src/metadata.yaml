@@ -11,6 +11,7 @@ maintainers: ['Cory Johns <cory.johns@canonical.com>']
 series:
   - jammy
   - noble
+  - resolute
 tags: ['openstack', 'native', 'integration']
 provides:
   clients:

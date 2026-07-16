@@ -5,6 +5,12 @@ bases:
       - name: ubuntu
         channel: "22.04"
         architectures: ["amd64"]
+      - name: ubuntu
+        channel: "24.04"
+        architectures: ["amd64"]
+      - name: ubuntu
+        channel: "26.04"
+        architectures: ["amd64"]
     run-on:
       - name: ubuntu
         channel: "22.04"
@@ -12,6 +18,9 @@ bases:
       - name: ubuntu
         channel: "24.04"
         architectures: ["amd64", "arm64", "s390x"]
+      - name: ubuntu
+        channel: "26.04"
+        architectures: ["amd64", "arm64"]
 parts:
   charm:
     source: src
