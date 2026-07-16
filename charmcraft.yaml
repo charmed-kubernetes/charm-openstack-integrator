@@ -6,9 +6,6 @@ bases:
         channel: "22.04"
         architectures: ["amd64"]
       - name: ubuntu
-        channel: "24.04"
-        architectures: ["amd64"]
-      - name: ubuntu
         channel: "26.04"
         architectures: ["amd64"]
     run-on:
