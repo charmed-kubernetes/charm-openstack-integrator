@@ -36,8 +36,8 @@ variable "constraints" {
   default     = "arch=amd64"
 }
 
-variable "model" {
-  description = "Reference to a `juju_model` where this application is to be managed."
+variable "model_uuid" {
+  description = "Reference to an existing Juju model UUID."
   type        = string
 }
 
