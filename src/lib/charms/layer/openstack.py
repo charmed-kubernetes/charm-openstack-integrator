@@ -1138,14 +1138,18 @@ class OctaviaLBImpl(BaseLBImpl):
         return _openstack("loadbalancer", "list")
 
     def create_loadbalancer(self):
-        return _openstack(
+        args = [
             "loadbalancer",
             "create",
             "--name",
             self.name,
             "--vip-subnet-id",
             self.subnet,
-        )
+        ]
+        provider = hookenv.config().get("lb-provider")
+        if provider:
+            args += ["--provider", provider]
+        return _openstack(*args)
 
     def show_loadbalancer(self):
         return _openstack("loadbalancer", "show", self.name)
