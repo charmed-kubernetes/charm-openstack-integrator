@@ -180,6 +180,10 @@ def test_run_with_creds(_load_creds):
         "region": "region",
         "username": "username",
         "password": "password",
+        "application_credential_id": "",
+        "application_credential_name": "",
+        "application_credential_secret": "",
+        "auth_type": "",
         "user_domain_name": "user_domain_name",
         "project_domain_name": "project_domain_name",
         "project_id": "project_id",
@@ -236,12 +240,98 @@ def test_run_with_creds(_load_creds):
     assert env["OS_CACERT"] == str(openstack.CA_CERT_FILE)
     assert "OS_IDENTITY_API_VERSION" not in env
 
-    openstack.CA_CERT_FILE.unlink()
+
+def test_run_with_creds_custom_endpoint_timeout(_load_creds):
+    openstack.hookenv.config.return_value = {
+        "web-proxy-enable": True,
+        "endpoint-timeout": 12.5,
+    }
+    _load_creds.return_value = {
+        "auth_url": "auth_url",
+        "region": "region",
+        "username": "username",
+        "password": "password",
+        "application_credential_id": "",
+        "application_credential_name": "",
+        "application_credential_secret": "",
+        "auth_type": "",
+        "user_domain_name": "user_domain_name",
+        "project_domain_name": "project_domain_name",
+        "project_id": "project_id",
+        "project_name": "project_name",
+        "endpoint_tls_ca": None,
+        "version": "3",
+    }
+
+    with mock.patch.dict(os.environ, {"PATH": "path"}):
+        openstack._run_with_creds("my", "args")
+
+    assert subprocess.run.call_args[1]["timeout"] == 12.5
+
+
+def test_run_with_creds_invalid_endpoint_timeout_uses_default(_load_creds, log_err):
+    openstack.hookenv.config.return_value = {
+        "web-proxy-enable": True,
+        "endpoint-timeout": "not-a-number",
+    }
+    _load_creds.return_value = {
+        "auth_url": "auth_url",
+        "region": "region",
+        "username": "username",
+        "password": "password",
+        "application_credential_id": "",
+        "application_credential_name": "",
+        "application_credential_secret": "",
+        "auth_type": "",
+        "user_domain_name": "user_domain_name",
+        "project_domain_name": "project_domain_name",
+        "project_id": "project_id",
+        "project_name": "project_name",
+        "endpoint_tls_ca": None,
+        "version": "3",
+    }
+
+    with mock.patch.dict(os.environ, {"PATH": "path"}):
+        openstack._run_with_creds("my", "args")
+
+    assert subprocess.run.call_args[1]["timeout"] == openstack.DEFAULT_ENDPOINT_TIMEOUT
+    assert log_err.call_count >= 1
+
+    if openstack.CA_CERT_FILE.exists():
+        openstack.CA_CERT_FILE.unlink()
     _load_creds.return_value["version"] = None
     openstack._run_with_creds("my", "args")
     env = subprocess.run.call_args[1]["env"]
     assert "OS_CACERT" not in env
     assert "OS_IDENTITY_API_VERSION" not in env
+
+
+def test_run_with_app_creds(_load_creds):
+    _load_creds.return_value = {
+        "auth_url": "auth_url",
+        "region": "region",
+        "username": "",
+        "password": "",
+        "application_credential_id": "app-cred-id",
+        "application_credential_name": "",
+        "application_credential_secret": "app-cred-secret",
+        "auth_type": "v3applicationcredential",
+        "user_domain_name": "",
+        "project_domain_name": "",
+        "project_id": "",
+        "project_name": "",
+        "endpoint_tls_ca": None,
+        "version": "3",
+    }
+    with mock.patch.dict(os.environ, {"PATH": "path"}):
+        openstack._run_with_creds("my", "args")
+
+    env = subprocess.run.call_args[1]["env"]
+    assert env["OS_AUTH_TYPE"] == "v3applicationcredential"
+    assert env["OS_APPLICATION_CREDENTIAL_ID"] == "app-cred-id"
+    assert env["OS_APPLICATION_CREDENTIAL_SECRET"] == "app-cred-secret"
+    assert "OS_USERNAME" not in env
+    assert "OS_PASSWORD" not in env
 
 
 def test_default_subnet(_openstack):
@@ -753,6 +843,10 @@ def test_update_credentials(_normalize_creds, _save_creds, log_err):
     expected = config.copy()
     del expected["credentials"]
     expected["endpoint_tls_ca"] = ""
+    expected["application_credential_id"] = ""
+    expected["application_credential_name"] = ""
+    expected["application_credential_secret"] = ""
+    expected["auth_type"] = ""
     assert openstack.update_credentials() is True
     _save_creds.assert_called_with(expected)
 
@@ -767,6 +861,52 @@ def test_update_credentials(_normalize_creds, _save_creds, log_err):
     config["username"] = ""
     assert openstack.update_credentials() is False
     status.blocked.assert_called_with("missing required credentials: region, username")
+
+    _save_creds.reset_mock()
+    status.blocked.reset_mock()
+    config.update(
+        {
+            "region": "region",
+            "username": "",
+            "password": "",
+            "project_name": "",
+            "project_domain_name": "",
+            "user_domain_name": "",
+            "application_credential_secret": "app-cred-secret",
+            "application_credential_id": "app-cred-id",
+            "application_credential_name": "",
+        }
+    )
+    assert openstack.update_credentials() is True
+    _save_creds.assert_called_once()
+
+    _save_creds.reset_mock()
+    status.blocked.reset_mock()
+    config["application_credential_id"] = ""
+    assert openstack.update_credentials() is False
+    status.blocked.assert_called_with(
+        "missing required credential: "
+        "application_credential_id or application_credential_name"
+    )
+
+    _save_creds.reset_mock()
+    status.blocked.reset_mock()
+    config.update(
+        {
+            "username": "username",
+            "password": "",
+            "project_name": "",
+            "project_domain_name": "",
+            "user_domain_name": "",
+            "application_credential_secret": "app-cred-secret",
+            "application_credential_id": "app-cred-id",
+            "application_credential_name": "",
+        }
+    )
+    assert openstack.update_credentials() is False
+    status.blocked.assert_called_with(
+        "invalid credentials: do not mix userpass and application " "credential options"
+    )
 
 
 def test_normalize_creds(_determine_version, log_err):
@@ -793,6 +933,10 @@ def test_normalize_creds(_determine_version, log_err):
         region="",
         username=None,
         password=None,
+        application_credential_id=None,
+        application_credential_name=None,
+        application_credential_secret=None,
+        auth_type=None,
         user_domain_name=None,
         user_domain_id=None,
         project_domain_name=None,
@@ -818,6 +962,10 @@ def test_normalize_creds(_determine_version, log_err):
         region="us-east-1",
         username="username",
         password="password",
+        application_credential_id=None,
+        application_credential_name=None,
+        application_credential_secret=None,
+        auth_type=None,
         domain_id=None,
         domain_name=None,
         user_domain_name="user-domain-name",
@@ -859,6 +1007,34 @@ def test_normalize_creds(_determine_version, log_err):
 
     attrs["endpoint-tls-ca"] = attrs.pop("cacertificates")[0]
     assert openstack._normalize_creds(attrs) == expected
+
+    appcred_attrs = {
+        "auth-url": "auth-url",
+        "region": "region",
+        "auth-type": "v3applicationcredential",
+        "application-credential-id": "app-cred-id",
+        "application-credential-secret": "app-cred-secret",
+    }
+    assert openstack._normalize_creds(appcred_attrs) == dict(
+        auth_url="auth-url",
+        region="region",
+        username=None,
+        password=None,
+        application_credential_id="app-cred-id",
+        application_credential_name=None,
+        application_credential_secret="app-cred-secret",
+        auth_type="v3applicationcredential",
+        domain_id=None,
+        domain_name=None,
+        user_domain_name=None,
+        user_domain_id=None,
+        project_domain_name=None,
+        project_domain_id=None,
+        project_id=None,
+        project_name=None,
+        endpoint_tls_ca=None,
+        version="3",
+    )
 
 
 @pytest.mark.parametrize(

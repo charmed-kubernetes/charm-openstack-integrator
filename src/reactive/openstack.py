@@ -1,4 +1,6 @@
 from typing import TYPE_CHECKING, Any, Mapping, Optional
+import json
+import subprocess
 from str2bool import str2bool
 from charmhelpers.core import hookenv
 from charms.reactive import (
@@ -15,6 +17,51 @@ from charms.reactive.relations import endpoint_from_name
 
 from charms import layer
 
+OPENSTACKCLIENTS_READY_FLAG = "charm.openstackclients.ready"
+
+
+def _normalize_snap_channel(channel: str) -> str:
+    channel = (channel or "stable").strip()
+    if "/" not in channel:
+        return f"latest/{channel}"
+    return channel
+
+
+def _openstackclients_snap_info() -> Optional[Mapping[str, str]]:
+    result = subprocess.run(
+        ("snap", "list", "openstackclients"),
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+
+    lines = [line for line in result.stdout.splitlines() if line.strip()]
+    if len(lines) < 2:
+        return None
+
+    for line in lines[1:]:
+        parts = line.split()
+        if parts and parts[0] == "openstackclients":
+            return {
+                "version": parts[1] if len(parts) > 1 else "",
+                "tracking": parts[3] if len(parts) > 3 else "",
+            }
+    return None
+
+
+def _openstackclients_snap_installed(channel: Optional[str] = None) -> bool:
+    info = _openstackclients_snap_info()
+    if not info:
+        return False
+    if channel is None:
+        return True
+    tracking = info.get("tracking", "")
+    return _normalize_snap_channel(tracking) == _normalize_snap_channel(channel)
+
+
 if TYPE_CHECKING:
     from loadbalancer_interface.schemas.v1 import (
         Request as LBRequest,
@@ -26,10 +73,143 @@ SUPPORTED_LB_ALGS = ["ROUND_ROBIN", "LEAST_CONNECTIONS", "SOURCE_IP"]
 SUPPORTED_LB_HC_PROTOS = ["ping", "http", "https", "tls-hello", "udp-connect", "sctp"]
 
 
-@when_all("snap.installed.openstackclients")
+def _parse_additional_cloud_conf_options(config: Mapping[str, Any]):
+    """Parse and validate additional-cloud-conf-options JSON config."""
+    raw = config.get("additional-cloud-conf-options")
+    if raw in (None, "", "null"):
+        return None, None
+
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as e:
+        return None, f"Invalid JSON for config additional-cloud-conf-options: {e}"
+
+    if not isinstance(parsed, dict):
+        return (
+            None,
+            "Invalid value for config additional-cloud-conf-options: "
+            "expected a JSON object",
+        )
+
+    for section, values in parsed.items():
+        if not isinstance(section, str) or not section:
+            return (
+                None,
+                "Invalid value for config additional-cloud-conf-options: "
+                "section names must be non-empty strings",
+            )
+        if not isinstance(values, dict):
+            return (
+                None,
+                "Invalid value for config additional-cloud-conf-options: "
+                "section values must be JSON objects",
+            )
+        for key in values.keys():
+            if not isinstance(key, str) or not key:
+                return (
+                    None,
+                    "Invalid value for config additional-cloud-conf-options: "
+                    "option names must be non-empty strings",
+                )
+
+    return parsed, None
+
+
+def _parse_use_octavia(config: Mapping[str, Any], detected: bool) -> Optional[bool]:
+    """Return effective has_octavia value from config and detection."""
+    value = config.get("use-octavia", "auto")
+    if isinstance(value, str):
+        value = value.strip().lower()
+    if value in (None, "", "auto"):
+        return detected
+    if isinstance(value, bool):
+        return value
+    parsed = str2bool(value)
+    return parsed
+
+
+def _request_credentials_payload(creds: Mapping[str, Any]) -> Mapping[str, Any]:
+    """
+    Return only fields accepted by interface-openstack-integration set_credentials.
+    """
+    keys = [
+        "auth_url",
+        "region",
+        "username",
+        "password",
+        "user_domain_name",
+        "project_domain_name",
+        "project_name",
+        "endpoint_tls_ca",
+        "domain_id",
+        "domain_name",
+        "project_id",
+        "project_domain_id",
+        "user_domain_id",
+        "version",
+        "application_credential_id",
+        "application_credential_name",
+        "application_credential_secret",
+        "auth_type",
+    ]
+    return {k: creds.get(k) for k in keys}
+
+
+@when_not(OPENSTACKCLIENTS_READY_FLAG)
+@when_not("upgrade.series.in-progress")
+def ensure_openstackclients_snap():
+    """Ensure openstackclients snap is installed and mark the custom ready flag."""
+    channel = hookenv.config()["openstackclients-snap-channel"]
+    if _openstackclients_snap_installed(channel):
+        set_flag(OPENSTACKCLIENTS_READY_FLAG)
+        return
+
+    if _openstackclients_snap_installed():
+        layer.status.maintenance(f"Refreshing openstackclients snap to {channel}")
+        subprocess.run(
+            ("snap", "refresh", "openstackclients", "--channel", channel),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    else:
+        layer.status.maintenance(f"Installing openstackclients snap from {channel}")
+        subprocess.run(
+            ("snap", "install", "openstackclients", "--classic", "--channel", channel),
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    set_flag(OPENSTACKCLIENTS_READY_FLAG)
+
+
+@when_all(OPENSTACKCLIENTS_READY_FLAG)
 def set_app_ver():
-    version = layer.snap.get_installed_version("openstackclients")
-    hookenv.application_version_set(version)
+    """Set app version from installed openstackclients snap when channel matches."""
+    channel = hookenv.config()["openstackclients-snap-channel"]
+    if not _openstackclients_snap_installed(channel):
+        return
+    info = _openstackclients_snap_info()
+    if info and info.get("version"):
+        hookenv.application_version_set(info["version"])
+
+
+@when_all(OPENSTACKCLIENTS_READY_FLAG)
+@when_any("config.changed.openstackclients-snap-channel")
+def refresh_openstackclients_snap_channel():
+    """Refresh openstackclients snap to the configured channel if changed."""
+    channel = hookenv.config()["openstackclients-snap-channel"]
+    if _openstackclients_snap_installed(channel):
+        set_flag(OPENSTACKCLIENTS_READY_FLAG)
+        return
+    layer.status.maintenance(f"Refreshing openstackclients snap to {channel}")
+    subprocess.run(
+        ("snap", "refresh", "openstackclients", "--channel", channel),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    set_flag(OPENSTACKCLIENTS_READY_FLAG)
 
 
 @when_any(
@@ -37,6 +217,9 @@ def set_app_ver():
     "config.changed.auth-url",
     "config.changed.username",
     "config.changed.password",
+    "config.changed.application-credential-id",
+    "config.changed.application-credential-name",
+    "config.changed.application-credential-secret",
     "config.changed.domain-name",
     "config.changed.domain-id",
     "config.changed.project-name",
@@ -107,7 +290,7 @@ def get_creds():
         set_flag("charm.openstack.creds.changed")
 
 
-@when_all("snap.installed.openstackclients", "charm.openstack.creds.set")
+@when_all(OPENSTACKCLIENTS_READY_FLAG, "charm.openstack.creds.set")
 @when_not("endpoint.clients.requests-pending")
 @when_not("upgrade.series.in-progress")
 def no_requests():
@@ -123,7 +306,7 @@ def lb_manage_security_groups(config: Mapping[str, Any]) -> Optional[bool]:
 
 
 @when_all(
-    "snap.installed.openstackclients",
+    OPENSTACKCLIENTS_READY_FLAG,
     "charm.openstack.creds.set",
     "endpoint.clients.joined",
 )
@@ -138,9 +321,17 @@ def handle_requests():
     layer.status.maintenance("Granting integration requests")
     clients = endpoint_from_name("clients")
     config = hookenv.config()
-    has_octavia = layer.openstack.detect_octavia()
+    detected_octavia = layer.openstack.detect_octavia()
+    has_octavia = _parse_use_octavia(config, detected_octavia)
+    if has_octavia is None:
+        layer.status.blocked("Invalid value for config use-octavia")
+        return
     if (manage_security_groups := lb_manage_security_groups(config)) is None:
         layer.status.blocked(f"Invalid value for config {manage_security_groups=}")
+        return
+    additional_cloud_conf_options, error = _parse_additional_cloud_conf_options(config)
+    if error:
+        layer.status.blocked(error)
         return
 
     settings = layer.openstack.cached_openstack_proxied()
@@ -153,7 +344,7 @@ def handle_requests():
         layer.status.maintenance("Granting request for {}".format(request.unit_name))
         creds = layer.openstack.get_credentials()
         request.set_proxy_config(settings)
-        request.set_credentials(**creds)
+        request.set_credentials(**_request_credentials_payload(creds))
         request.set_lbaas_config(
             config["subnet-id"],
             config["floating-network-id"],
@@ -163,6 +354,29 @@ def handle_requests():
             lb_enabled=config["lb-enabled"],
             internal_lb=config["internal-lb"],
         )
+
+        # Preserve compatibility with the reactive interface while allowing
+        # newer consumers to pick up additional options directly from relation data.
+        if hasattr(request, "_to_publish"):
+            request._to_publish.update(
+                {
+                    "member_subnet_id": config.get("member-subnet-id") or None,
+                    "create_monitor": config.get("create-monitor"),
+                    "monitor_delay": config.get("monitor-delay") or None,
+                    "monitor_timeout": config.get("monitor-timeout") or None,
+                    "monitor_max_retries": config.get("monitor-max-retries"),
+                    "node_selector": config.get("node-selector") or None,
+                    "internal_network_name": config.get("internal-network-name")
+                    or None,
+                    "public_network_name": config.get("public-network-name") or None,
+                    "lb_flavor_id": config.get("lb-flavor-id") or None,
+                    "key_id": config.get("key-id") or None,
+                    "verify_ssl": config.get("verify-ssl"),
+                    "tls_insecure": config.get("tls-insecure"),
+                    "verify": config.get("verify"),
+                    "additional_cloud_conf_options": additional_cloud_conf_options,
+                }
+            )
 
         def _or_none(val):
             if val in (None, "", "null"):
