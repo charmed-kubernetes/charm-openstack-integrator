@@ -300,10 +300,8 @@ def test_manage_loadbalancer(mock_lb, mock_subnet):
     lb_manager.update_members.assert_called_once_with([("1.2.3.4", "80")])
 
 
-@mock.patch.object(openstack.LoadBalancer, "_add_member_sg")
-@mock.patch.object(openstack.LoadBalancer, "_create_member_sg")
 @mock.patch.object(openstack.LoadBalancer, "create")
-def test_get_or_create(create, cms, ams, kv):
+def test_get_or_create(create, kv):
     args = ("app", "80", "subnet", "alg", "proto", None, None, False)
     kv().get.return_value = {
         "sg_id": "sg_id",
@@ -311,6 +309,7 @@ def test_get_or_create(create, cms, ams, kv):
         "fip": "fip",
         "address": "address",
         "members": [[1, 2], [3, 4]],
+        "sg_members": [[1, 2], [3, 4]],
     }
     lb = openstack.LoadBalancer.get_or_create(*args)
     create.assert_not_called()
@@ -326,18 +325,15 @@ def test_get_or_create(create, cms, ams, kv):
     assert lb.fip == "fip"
     assert lb.address == "address"
     assert lb.members == {(1, 2), (3, 4)}
+    assert lb.sg_members == {(1, 2), (3, 4)}
     assert lb.is_created is True
-    cms.assert_not_called()
-    ams.assert_not_called()
 
     del kv().get.return_value["member_sg_id"]
+    del kv().get.return_value["sg_members"]
     lb = openstack.LoadBalancer.get_or_create(*args)
-    cms.assert_called_once()
-    ams.assert_any_call((1, 2), raise_on_err=False)
-    ams.assert_any_call((3, 4), raise_on_err=False)
+    assert lb.member_sg_id is None
+    assert lb.sg_members == set()
 
-    cms.reset_mock()
-    ams.reset_mock()
     kv().get.return_value = None
     lb = openstack.LoadBalancer.get_or_create(*args)
     create.assert_called_once()
@@ -345,8 +341,7 @@ def test_get_or_create(create, cms, ams, kv):
     assert lb.fip is None
     assert lb.address is None
     assert lb.members == set()
-    cms.assert_not_called()
-    ams.assert_not_called()
+    assert lb.sg_members == set()
 
     create.side_effect = subprocess.CalledProcessError(1, "cmd")
     with pytest.raises(openstack.OpenStackLBError):
@@ -487,7 +482,7 @@ def test_load_from_cache(impl, kv):
     assert lb.is_created
 
     impl.get_port_sec_enabled.assert_called_once()
-    impl.find_secgrp.assert_called_with("openstack-integrator-1234-app-members")
+    assert lb.sg_members == set()
 
 
 def test_delete_loadbalancer(impl, kv):
@@ -570,14 +565,19 @@ def test_find(impl, log_err):
 
 def test_member_sg_failure(impl, _openstack):
     impl.find_port.return_value = None
+    impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
     lb = openstack.LoadBalancer(
         "app", "80", "subnet", "alg", "proto", None, None, False
     )
     lb.address = "1.1.1.1"
-    lb.members = {(1, 2)}
+    lb.members = {("10.0.0.1", "80")}
+    lb.sg_members = {("10.0.0.1", "80")}
     with pytest.raises(openstack.OpenStackLBError) as excinfo:
-        lb.update_members({(1, 2), (3, 4)})
-    assert "Error while member-adding load balancer" in str(excinfo.value)
+        lb.update_members({("10.0.0.1", "80"), ("10.0.0.2", "80")})
+    assert "Error while member-adding load balancer:" in str(excinfo.value)
+    assert "no Neutron port found for 10.0.0.2" in str(excinfo.value)
+    assert lb.members == {("10.0.0.1", "80"), ("10.0.0.2", "80")}
+    assert lb.sg_members == {("10.0.0.1", "80")}
 
 
 def test_update_members(impl, _openstack):
@@ -588,36 +588,48 @@ def test_update_members(impl, _openstack):
     impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
     impl.list_sg_rules.return_value = []
     impl.get_subnet_cidr.return_value = "1.1.1.0/24"
+    _openstack.return_value = {
+        "port_security_enabled": True,
+        "security_group_ids": [],
+    }
 
-    lb.members = {(1, 2), (3, 4)}
-    lb.update_members({(1, 2), (3, 4)})
+    lb.members = {("1", "2"), ("3", "4")}
+    lb.sg_members = {("1", "2"), ("3", "4")}
+    lb.update_members({("1", "2"), ("3", "4")})
     impl.delete_member.assert_not_called()
     impl.create_member.assert_not_called()
     impl.create_sg_rule.assert_not_called()
 
-    lb.members = {(1, 2), (3, 4)}
-    lb.update_members({(1, 2), (3, 4), (5, 6)})
+    lb.members = {("1", "2"), ("3", "4")}
+    lb.sg_members = {("1", "2"), ("3", "4")}
+    lb.update_members({("1", "2"), ("3", "4"), ("5", "6")})
     impl.delete_member.assert_not_called()
     impl.create_member.assert_called_once()
-    assert lb.members == {(1, 2), (3, 4), (5, 6)}
+    assert lb.members == {("1", "2"), ("3", "4"), ("5", "6")}
+    assert lb.sg_members == {("1", "2"), ("3", "4"), ("5", "6")}
     impl.create_sg_rule.assert_called_once()
 
     impl.create_member.reset_mock()
     impl.create_sg_rule.reset_mock()
-    lb.members = {(1, 2), (3, 4)}
-    lb.update_members({(1, 2)})
+    lb.members = {("1", "2"), ("3", "4")}
+    lb.sg_members = {("1", "2"), ("3", "4")}
+    lb.update_members({("1", "2")})
     impl.delete_member.assert_called_once()
     impl.create_member.assert_not_called()
     impl.create_sg_rule.assert_not_called()
+    assert lb.sg_members == {("1", "2")}
 
     impl.delete_member.reset_mock()
-    lb.members = {(1, 2), (3, 4)}
-    lb.update_members({(5, 6)})
+    lb.members = {("1", "2"), ("3", "4")}
+    lb.sg_members = {("1", "2"), ("3", "4")}
+    lb.update_members({("5", "6")})
     impl.delete_member.assert_called()
     impl.create_member.assert_called()
+    assert lb.sg_members == {("5", "6")}
 
     impl.delete_member.side_effect = subprocess.CalledProcessError(1, "cmd")
-    lb.members = {(1, 2), (3, 4)}
+    lb.members = {("1", "2"), ("3", "4")}
+    lb.sg_members = {("1", "2"), ("3", "4")}
     with pytest.raises(openstack.OpenStackLBError):
         lb.update_members(set())
 
@@ -625,8 +637,124 @@ def test_update_members(impl, _openstack):
     impl.create_member.side_effect = subprocess.CalledProcessError(1, "cmd")
     impl.list_members.return_value = set()
     lb.members = set()
+    lb.sg_members = set()
     with pytest.raises(openstack.OpenStackLBError):
-        lb.update_members({(1, 2)})
+        lb.update_members({("1", "2")})
+
+
+def test_find_port_cross_subnet(_openstack):
+    lb_impl = openstack.OctaviaLBImpl(
+        "app", "6443", "vip-subnet-a", "ROUND_ROBIN", "TCP", None, False
+    )
+    _openstack.return_value = [
+        {
+            "ID": "port-on-b",
+            "Fixed IP Addresses": [
+                {"subnet_id": "vm-subnet-b", "ip_address": "192.0.2.10"}
+            ],
+        }
+    ]
+    assert lb_impl.find_port("192.0.2.10") == "port-on-b"
+    _openstack.assert_called_once_with(
+        "port", "list", "--fixed-ip", "ip-address=192.0.2.10"
+    )
+
+    _openstack.reset_mock()
+    _openstack.return_value = []
+    assert lb_impl.find_port("192.0.2.99") is None
+
+
+def test_find_port_ambiguous(_openstack):
+    lb_impl = openstack.OctaviaLBImpl(
+        "app", "6443", "vip-subnet-a", "ROUND_ROBIN", "TCP", None, False
+    )
+    _openstack.return_value = [
+        {"ID": "port-a", "Fixed IP Addresses": [{"subnet_id": "vip-subnet-a"}]},
+        {"ID": "port-b", "Fixed IP Addresses": [{"subnet_id": "other-subnet"}]},
+    ]
+    assert lb_impl.find_port("10.0.0.5") == "port-a"
+
+    _openstack.return_value = [
+        {"ID": "port-b", "Fixed IP Addresses": [{"subnet_id": "subnet-b"}]},
+        {"ID": "port-c", "Fixed IP Addresses": [{"subnet_id": "subnet-c"}]},
+    ]
+    _openstack.side_effect = [
+        _openstack.return_value,
+        {"id": "vip-subnet-a-uuid"},
+    ]
+    with pytest.raises(openstack.OpenStackLBError) as excinfo:
+        lb_impl.find_port("10.0.0.5")
+    assert "ambiguous Neutron ports for 10.0.0.5" in str(excinfo.value)
+
+
+def test_update_members_cross_subnet_and_retry(impl, _openstack, kv):
+    kv().get.return_value = None
+    lb = openstack.LoadBalancer(
+        "app", "6443", "vip-subnet-a", "ROUND_ROBIN", "TCP", None, None, False
+    )
+    lb.address = "198.51.100.10"
+    lb.member_sg_id = "member-sg-id"
+    impl.list_members.return_value = set()
+    impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
+    impl.list_sg_rules.return_value = []
+    impl.get_subnet_cidr.return_value = "198.51.100.0/24"
+
+    # Run 1: member created in Octavia, but port lookup fails for 192.0.2.20
+    impl.find_port.side_effect = ["port-10", None, "port-30"]
+    _openstack.return_value = {
+        "port_security_enabled": True,
+        "security_group_ids": [],
+    }
+    members = {
+        ("192.0.2.10", "6443"),
+        ("192.0.2.20", "6443"),
+        ("192.0.2.30", "6443"),
+    }
+    with pytest.raises(openstack.OpenStackLBError) as excinfo:
+        lb.update_members(members)
+    assert "192.0.2.20:6443: no Neutron port found" in str(excinfo.value)
+    assert impl.create_member.call_count == 3
+    assert lb.members == members
+    assert lb.sg_members == {("192.0.2.10", "6443"), ("192.0.2.30", "6443")}
+    impl.create_sg_rule.assert_called_with("member-sg-id", "198.51.100.0/24", "6443")
+
+    # Run 2: Octavia already has all members; only missing SG member is reconciled
+    impl.create_member.reset_mock()
+    impl.set_port_secgrp.reset_mock()
+    impl.find_port.side_effect = None
+    impl.find_port.return_value = "port-20"
+    lb.update_members(members)
+    impl.create_member.assert_not_called()
+    impl.set_port_secgrp.assert_called_once_with("port-20", "member-sg-id")
+    assert lb.sg_members == members
+
+
+def test_update_members_port_security_asymmetric(impl, _openstack, kv):
+    kv().get.return_value = None
+    impl.get_port_sec_enabled.return_value = False
+    lb = openstack.LoadBalancer(
+        "app", "6443", "vip-subnet-a", "ROUND_ROBIN", "TCP", None, None, False
+    )
+    lb.address = "198.51.100.10"
+    impl.list_members.return_value = set()
+    impl.show_pool.return_value = {"provisioning_status": "ACTIVE"}
+    impl.list_sg_rules.return_value = []
+    impl.get_subnet_cidr.return_value = "198.51.100.0/24"
+    impl.find_secgrp.return_value = None
+    impl.create_secgrp.return_value = "new-member-sg"
+
+    # VIP port_security_enabled=False, member 1 port_security_enabled=True,
+    # member 2 port_security_enabled=False
+    impl.find_port.side_effect = ["port-sec-on", "port-sec-off"]
+    _openstack.side_effect = [
+        {"port_security_enabled": True, "security_group_ids": []},
+        {"port_security_enabled": False, "security_group_ids": []},
+    ]
+    members = {("192.0.2.10", "6443"), ("192.0.2.11", "6443")}
+    lb.update_members(members)
+    impl.create_secgrp.assert_called_once_with("openstack-integrator-1234-app-members")
+    impl.set_port_secgrp.assert_called_once_with("port-sec-on", "new-member-sg")
+    assert lb.sg_members == members
 
 
 def test_is_base64():
