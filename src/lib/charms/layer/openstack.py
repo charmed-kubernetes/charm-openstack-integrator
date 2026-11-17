@@ -364,14 +364,19 @@ class OpenStackError(Exception):
 
 
 class OpenStackLBError(OpenStackError):
-    def __init__(self, action, exc=True):
+    def __init__(self, action, exc=True, detail=None):
         action = (action[:-1] if action.endswith("e") else action) + "ing"
         if exc:
             log_err("Error {} loadbalancer\n{}", action, format_exc())
-        super().__init__(
-            "Error while {} load balancer; "
-            "check credential and debug-log".format(action)
-        )
+        self.detail = detail
+        if detail:
+            msg = f"Error while {action} load balancer: {detail}"
+        else:
+            msg = (
+                "Error while {} load balancer; "
+                "check credential and debug-log".format(action)
+            )
+        super().__init__(msg)
 
 
 # Internal helpers
@@ -664,6 +669,7 @@ class LoadBalancer:
         self.fip = None
         self.address = None
         self.members = set()
+        self.sg_members = set()
         self.is_created = False
         self._impl = self._get_impl()
         # cache this since we access it multiple times
@@ -891,28 +897,44 @@ class LoadBalancer:
         # prime the members cache before update of pre-existing LB lp#1959720
         if not self.members:
             self.members = self._impl.list_members()
-        if self.members == members:
+        if self.members == members and members <= self.sg_members:
             return
 
+        current_members = set(self.members)
+        failures = {}
         try:
             removed_members = self.members - members
             for member in removed_members:
                 self._impl.delete_member(member)
+                current_members.discard(member)
+                self.sg_members.discard(member)
                 log("Removed member: {}", member)
                 self._wait_pool_not_pending()
 
             added_members = members - self.members
             for member in added_members:
                 self._impl.create_member(member)
-                if self.is_port_sec_enabled:
-                    self._add_member_sg(member, raise_on_err=True)
+                current_members.add(member)
                 log("Added member: {}", member)
                 self._wait_pool_not_pending()
+
+            for member in sorted(members - self.sg_members):
+                if (reason := self._reconcile_member_sg(member)) is None:
+                    self.sg_members.add(member)
+                else:
+                    failures[member] = reason
         except subprocess.CalledProcessError:
             raise OpenStackLBError(action="update")
+        finally:
+            self.members = current_members
+            self._update_cached_info()
 
-        self.members = members
-        self._update_cached_info()
+        if failures:
+            detail = "; ".join(
+                f"{addr}:{port}: {reason}"
+                for (addr, port), reason in sorted(failures.items())
+            )
+            raise OpenStackLBError(action="member-add", exc=False, detail=detail)
 
     def _create_member_sg(self):
         member_sg_name = self.name + "-members"
@@ -924,22 +946,32 @@ class LoadBalancer:
             log("Created security group {} ({})", member_sg_name, member_sg_id)
         self.member_sg_id = member_sg_id
 
-    def _add_member_sg(self, member, raise_on_err):
+    def _reconcile_member_sg(self, member) -> Optional[str]:
         addr, port = member
-        port_id = self._impl.find_port(addr)
+        try:
+            port_id = self._impl.find_port(addr)
+        except OpenStackLBError as e:
+            log_err(str(e))
+            return e.detail or str(e)
         if not port_id:
             log_err(f"Unable to find port for {addr=} {port=}")
-            if raise_on_err:
-                raise OpenStackLBError(action="member-add", exc=False)
-            return
-        if (
-            self.member_sg_id
-            not in _openstack("port", "show", port_id)["security_group_ids"]
-        ):
+            return f"no Neutron port found for {addr}"
+        port_info = _openstack("port", "show", port_id)
+        if port_info.get("port_security_enabled") is False:
+            log(
+                "Port {} for {} has port security disabled; skipping member SG",
+                port_id,
+                addr,
+            )
+            return None
+        if not self.member_sg_id:
+            self._create_member_sg()
+        if self.member_sg_id not in port_info["security_group_ids"]:
             self._impl.set_port_secgrp(port_id, self.member_sg_id)
         if not self._find_matching_sg_rule(self.member_sg_id, self.address, port):
             subnet_cidr = self._impl.get_subnet_cidr(self.subnet)
             self._impl.create_sg_rule(self.member_sg_id, subnet_cidr, port)
+        return None
 
     def delete(self):
         """Delete this loadbalancer and all of its resources."""
@@ -962,11 +994,7 @@ class LoadBalancer:
             # was UDP or TCP.
             self.proto = info.get("proto") or DEFAULT_PROTOCOL
             self.member_sg_id = info.get("member_sg_id")
-            if self.member_sg_id is None and self.is_port_sec_enabled:
-                # handle upgrade from before the member SG was handled
-                self._create_member_sg()
-                for member in self.members:
-                    self._add_member_sg(member, raise_on_err=False)
+            self.sg_members = {tuple(m) for m in info.get("sg_members", [])}
             self.is_created = True
 
     def _update_cached_info(self):
@@ -981,9 +1009,11 @@ class LoadBalancer:
                 "fip_net": self.fip_net,
                 "manage_secgrps": self.manage_secgrps,
                 "sg_id": self.sg_id,
+                "member_sg_id": self.member_sg_id,
                 "fip": self.fip,
                 "address": self.address,
                 "members": list(self.members),
+                "sg_members": list(self.sg_members),
             },
         )
 
@@ -1060,20 +1090,39 @@ class BaseLBImpl:
     def delete_fip(self, fip):
         _openstack("floating", "ip", "delete", fip)
 
-    def find_port(self, address) -> Optional[str]:
-        port = _openstack(
-            "port",
-            "list",
-            "--fixed-ip",
-            "subnet={},ip-address={}".format(self.subnet, address),
-            "-c",
-            "ID",
-            "-f",
-            "value",
+    def _port_has_subnet(self, port_info: dict, subnet_id: str) -> bool:
+        fixed_ips = (
+            port_info.get("Fixed IP Addresses") or port_info.get("fixed_ips") or []
         )
-        if not port or "ID" not in port[0]:
+        return any(ip.get("subnet_id") == subnet_id for ip in fixed_ips)
+
+    def find_port(self, address) -> Optional[str]:
+        ports = (
+            _openstack(
+                "port",
+                "list",
+                "--fixed-ip",
+                f"ip-address={address}",
+            )
+            or []
+        )
+        if not ports:
             return None
-        return port[0]["ID"]
+        if len(ports) == 1:
+            return ports[0].get("ID")
+        subnet_id = self.subnet
+        on_lb_subnet = [p for p in ports if self._port_has_subnet(p, subnet_id)]
+        if not on_lb_subnet:
+            subnet_id = _openstack("subnet", "show", self.subnet)["id"]
+            on_lb_subnet = [p for p in ports if self._port_has_subnet(p, subnet_id)]
+        if len(on_lb_subnet) == 1:
+            return on_lb_subnet[0].get("ID")
+        port_ids = [p.get("ID") for p in ports]
+        raise OpenStackLBError(
+            action="member-add",
+            exc=False,
+            detail=f"ambiguous Neutron ports for {address}: {port_ids}",
+        )
 
     def get_subnet_cidr(self, name):
         return _openstack(
