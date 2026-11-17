@@ -4,3 +4,4 @@ pbr==6.1.0
 setuptools==77.0.3
 ops==2.20.0
 charms.proxylib == 0.0.0
+tenacity<9.2.0
